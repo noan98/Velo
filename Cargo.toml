@@ -1,0 +1,29 @@
+[package]
+name = "velo"
+version = "0.1.0"
+edition = "2021"
+description = "Windows 向けの軽量・高速ファイラー（土台）"
+license = "MIT"
+
+[dependencies]
+# GUI 本体。UI は ui/app.slint に記述し、build.rs でコンパイルする。
+slint = "1.16"
+# ファイルシステム監視。外部からのファイル追加/削除/リネームを検知する。
+notify = "8.2"
+# notify の生イベントは大量に飛んでくるため、デバウンス（まとめ）して扱う。
+notify-debouncer-full = "0.7"
+# ホームディレクトリ等の取得をクロスプラットフォームに行うため。
+dirs = "6.0"
+# SystemTime を「YYYY-MM-DD HH:MM」へ整形するため。手書きの暦計算を避ける目的で採用。
+chrono = "0.4"
+
+[build-dependencies]
+# .slint ファイルを Rust コードへコンパイルするビルドヘルパ。
+slint-build = "1.16"
+
+# リリースは軽量・高速起動を狙うので最適化重視。LTO で実行ファイルを絞る。
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

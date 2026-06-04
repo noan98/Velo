@@ -1,0 +1,121 @@
+import { ListView, Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+// 一覧の 1 行ぶんの「表示用」データ。
+// 整形済みの文字列だけを持ち、パス等の真実の源は Rust 側に置く（表示専用）。
+export struct FileRow {
+    // 種別を表す記号（後でアイコン画像に差し替え可能なよう、まずはテキスト）。
+    type-label: string,
+    name: string,
+    size: string,
+    modified: string,
+    // 行のスタイル分け等に使えるよう保持（パスは持たない）。
+    is-dir: bool,
+}
+
+export component MainWindow inherits Window {
+    title: "Velo";
+    preferred-width: 960px;
+    preferred-height: 640px;
+    min-width: 480px;
+    min-height: 320px;
+
+    // ---- Rust から流し込む状態（表示専用）----
+    in property <string> current-path;
+    in property <[FileRow]> rows;
+    in property <bool> loading;
+
+    // ---- UI からの操作を Rust へ伝えるコールバック ----
+    // 引数は rows 内のインデックス。実際のパス解決は Rust 側で行う。
+    callback row-double-clicked(int);
+    callback go-up();
+
+    VerticalBox {
+        padding: 6px;
+        spacing: 6px;
+
+        // ツールバー：上へボタン + アドレスバー（テキスト表示）+ 読み込み表示
+        HorizontalBox {
+            vertical-stretch: 0;
+            spacing: 8px;
+            Button {
+                text: "↑ 上へ";
+                clicked => { root.go-up(); }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                background: #f0f0f0;
+                border-radius: 4px;
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    text: root.current-path;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            if root.loading: Text {
+                text: "読み込み中…";
+                color: #888;
+                vertical-alignment: center;
+            }
+        }
+
+        // ヘッダ行（固定）。列幅は下のデータ行と揃える。
+        HorizontalBox {
+            vertical-stretch: 0;
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+            Text { text: "種別"; width: 48px; font-weight: 700; }
+            Text { text: "名前"; horizontal-stretch: 1; font-weight: 700; }
+            Text { text: "サイズ"; width: 110px; horizontal-alignment: right; font-weight: 700; }
+            Text { text: "更新日時"; width: 150px; font-weight: 700; }
+        }
+
+        // 仮想化された一覧。可視範囲の行だけが実体化されるので大量件数でも軽い。
+        ListView {
+            vertical-stretch: 1;
+            for row[idx] in root.rows: Rectangle {
+                height: 26px;
+                background: touch.has-hover ? #e8f0fe : transparent;
+
+                touch := TouchArea {
+                    // フォルダはダブルクリックで中に入る。
+                    // この行の rows 内インデックスを Rust に渡し、パス解決は Rust 側で行う。
+                    double-clicked => { root.row-double-clicked(idx); }
+                }
+
+                HorizontalBox {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Text {
+                        text: row.type-label;
+                        width: 48px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: row.name;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: row.size;
+                        width: 110px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        color: #555;
+                    }
+                    Text {
+                        text: row.modified;
+                        width: 150px;
+                        vertical-alignment: center;
+                        color: #555;
+                    }
+                }
+            }
+        }
+    }
+}
