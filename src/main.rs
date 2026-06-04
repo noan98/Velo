@@ -71,8 +71,12 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // 起動時はホームディレクトリを表示する。取得できなければカレントを使う。
-    let start = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    // 起動時はホームディレクトリを表示する。取得できなければカレントディレクトリ、
+    // それも無ければ "." を使う。current_dir() は絶対パスを返すため、相対パス開始による
+    // 親移動/表示パスのぶれを避けられる。
+    let start = dirs::home_dir()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
     navigate_to(window.as_weak(), start);
 
     window.run()

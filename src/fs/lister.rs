@@ -37,11 +37,9 @@ pub fn list_dir(path: &Path) -> std::io::Result<Vec<FileEntry>> {
 
     // 土台としての固定ソート: フォルダを先に、その中で名前順（大文字小文字を無視）。
     // ソート UI は後回しスコープなので、ここで決め打ちにしておく。
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    // sort_by_cached_key で小文字化キーを 1 件 1 回だけ計算する（比較ごとの割り当てを避ける）。
+    // `!is_dir` は false(0)=フォルダ → true(1)=ファイル の順になり、フォルダが先に来る。
+    entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
 
     Ok(entries)
 }
