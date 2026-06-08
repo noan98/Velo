@@ -1,0 +1,38 @@
+name: Release
+
+# `v` で始まるタグ（例: v0.1.0）を打つとリリースビルドを走らせ、
+# 生成した実行ファイルを GitHub Release に添付する。
+# 普段の品質ゲートは ci.yml が担うので、ここはリリース成果物の生成に専念する。
+on:
+  push:
+    tags:
+      - "v*"
+
+# Release を作成するため、ワークフローに書き込み権限を与える。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: リリースビルドと成果物の公開
+    # ci.yml と同じく x86_64-pc-windows-msvc をそのままビルドするため Windows ランナーを使う。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust ツールチェーンのセットアップ
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: キャッシュ（cargo レジストリ・ビルドキャッシュ）
+        uses: Swatinem/rust-cache@v2
+
+      # Cargo.toml の [profile.release]（LTO・strip 等）で軽量・高速起動を狙ったビルド。
+      - name: リリースビルド
+        run: cargo build --release --locked
+
+      # 打たれたタグをそのまま GitHub Release にし、実行ファイルを添付する。
+      # タグ push を起点にした自動リリースなので、手動でのアップロードは不要。
+      - name: Release を作成して実行ファイルを添付
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/velo.exe
