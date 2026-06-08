@@ -339,7 +339,11 @@ fn make_watcher(weak: Weak<MainWindow>, path: &Path) -> Option<fs::watcher::DirW
         },
         move |message| {
             // 監視中エラーはターミナルに埋もれさせず、ステータスバーへ可視化する。
+            // あわせて、死んだウォッチャを生かしたままにする“サイレント停止”を避けるため、
+            // AppState から破棄する。以降イベントは届かない前提を状態にも反映しておく
+            // （次のユーザー操作による移動で、新ディレクトリのウォッチャが張り直される）。
             let _ = error_weak.upgrade_in_event_loop(move |window| {
+                APP.with(|app| app.borrow_mut().watcher = None);
                 window.set_error_message(format!("監視エラー: {message}").as_str().into());
             });
         },
@@ -454,5 +458,73 @@ fn format_time(time: Option<SystemTime>) -> String {
             local.format("%Y-%m-%d %H:%M").to_string()
         }
         None => "-".to_string(),
+    }
+}
+
+// 表示用フォーマッタのユニットテスト。UI（Slint）には触れないため、ヘッドレス環境でも走る。
+#[cfg(test)]
+mod tests {
+    use super::{format_size, format_time, sort_column_from_int, sort_column_to_int, SortColumn};
+    use std::time::SystemTime;
+
+    #[test]
+    fn format_size_bytes_no_unit_scaling() {
+        // 1024 未満は素のバイト表記。境界の 1023 まで "B" のまま。
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1), "1 B");
+        assert_eq!(format_size(999), "999 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        // ちょうど 1024 から KB に繰り上がる。小数第 1 位まで表示。
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size(1024 * 1024 * 3 / 2), "1.5 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes_and_terabytes() {
+        assert_eq!(format_size(1024u64.pow(3)), "1.0 GB");
+        assert_eq!(format_size(1024u64.pow(4)), "1.0 TB");
+    }
+
+    #[test]
+    fn format_size_caps_at_terabytes() {
+        // TB を超えても単位配列の上限で頭打ちになり、数値だけが大きくなる。
+        assert_eq!(format_size(1024u64.pow(5)), "1024.0 TB");
+    }
+
+    #[test]
+    fn format_time_none_is_dash() {
+        assert_eq!(format_time(None), "-");
+    }
+
+    #[test]
+    fn format_time_some_has_expected_shape() {
+        // ローカルタイムゾーン依存なので厳密な値ではなく "YYYY-MM-DD HH:MM" の形だけ検証する。
+        let formatted = format_time(Some(SystemTime::UNIX_EPOCH));
+        let bytes = formatted.as_bytes();
+        assert_eq!(formatted.len(), 16);
+        assert_eq!(bytes[4], b'-');
+        assert_eq!(bytes[7], b'-');
+        assert_eq!(bytes[10], b' ');
+        assert_eq!(bytes[13], b':');
+        assert!(formatted[..4].bytes().all(|b| b.is_ascii_digit()));
+    }
+
+    #[test]
+    fn sort_column_int_round_trips() {
+        // Slint との列識別子（int）変換が往復で保たれる。未知値は名前列へ倒れる。
+        for column in [SortColumn::Name, SortColumn::Size, SortColumn::Modified] {
+            assert_eq!(sort_column_from_int(sort_column_to_int(column)), column);
+        }
+        assert_eq!(sort_column_from_int(999), SortColumn::Name);
     }
 }

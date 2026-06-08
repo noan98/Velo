@@ -1,0 +1,44 @@
+name: CI
+
+# プルリクエストと main への push でコード品質ゲートを機械的に強制する。
+# 「cargo clippy は警告ゼロ」という CLAUDE.md の約束を CI で担保するのが目的。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一ブランチで CI が走っている最中に新しい push が来たら、古い実行は打ち切る。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ビルド・静的解析・フォーマット・テスト
+    # ターゲットは x86_64-pc-windows-msvc。Slint GUI のクロスコンパイルを避けるため
+    # Windows ランナーでそのままビルドする。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust ツールチェーンのセットアップ
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: キャッシュ（cargo レジストリ・ビルドキャッシュ）
+        uses: Swatinem/rust-cache@v2
+
+      - name: フォーマット確認
+        run: cargo fmt --check
+
+      - name: ビルド確認
+        run: cargo build --locked
+
+      - name: Clippy（警告ゼロを強制）
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # ユニットテスト（format_size / format_time / list_dir のソート・エラー）。
+      # いずれも UI（ウィンドウ）を生成しないためヘッドレスな CI でも実行できる。
+      - name: テスト
+        run: cargo test --locked
