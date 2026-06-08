@@ -21,6 +21,10 @@ chrono = "0.4"
 # .slint ファイルを Rust コードへコンパイルするビルドヘルパ。
 slint-build = "1.16"
 
+[dev-dependencies]
+# list_dir などの I/O ロジックを、実際の一時ディレクトリを使って検証するため。
+tempfile = "3"
+
 # リリースは軽量・高速起動を狙うので最適化重視。LTO で実行ファイルを絞る。
 [profile.release]
 lto = true

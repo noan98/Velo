@@ -5097,6 +5097,7 @@ dependencies = [
  "notify-debouncer-full",
  "slint",
  "slint-build",
+ "tempfile",
 ]
 
 [[package]]
