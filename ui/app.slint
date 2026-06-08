@@ -1,4 +1,4 @@
-import { ListView, Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { ListView, Button, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // Rust 側からダーク/ライトを切り替えられるよう、グローバルを公開 API として再エクスポートする。
@@ -119,6 +119,12 @@ export component MainWindow inherits Window {
     in property <string> current-path;
     in property <[FileRow]> rows;
     in property <bool> loading;
+    // アドレスバーの編集テキスト（双方向）。確定や移動のたびに Rust 側が現在パスへ更新する。
+    in-out property <string> address-bar-text;
+    // 入力されたパスが解決できなかったときに true。アドレスバーを赤く縁取りして知らせる。
+    in-out property <bool> address-error;
+    // 検索バーの絞り込み文字列（双方向）。移動時に Rust 側が空へ戻す。
+    in-out property <string> filter-text;
     // エラー文言（空文字ならステータスバーは出さない）。
     in property <string> error-message;
     // 現在のソート列と方向（ヘッダの方向インジケータ表示に使う）。
@@ -133,6 +139,10 @@ export component MainWindow inherits Window {
     // Enter での実行（選択中フォルダに入る）。row-double-clicked と同じ意味。
     callback row-activated(int);
     callback go-up();
+    // アドレスバーで Enter が押されたとき、入力文字列を渡してパス解決を依頼する。
+    callback path-submitted(string);
+    // 検索バーの入力が変わるたびに、現在の絞り込み文字列を渡す。
+    callback filter-changed(string);
     // ヘッダクリックでのソート切替（引数は列識別子）。
     callback sort-changed(int);
     // ダーク/ライトの手動切替。
@@ -156,6 +166,7 @@ export component MainWindow inherits Window {
         height: 100%;
 
         // キーボードナビゲーション: 矢印で選択移動 / Enter で実行 / Backspace で親へ。
+        // （アドレスバー/検索バーにフォーカスがあるときは、その入力欄がキーを消費する。）
         key-pressed(event) => {
             if (event.text == Key.UpArrow) {
                 root.move-selection(-1);
@@ -182,7 +193,7 @@ export component MainWindow inherits Window {
             padding: 6px;
             spacing: 6px;
 
-            // ツールバー：上へボタン + アドレスバー + 読み込み表示 + テーマ切替
+            // ツールバー：上へボタン + 編集可能アドレスバー + 検索バー + 読み込み表示 + テーマ切替
             HorizontalBox {
                 vertical-stretch: 0;
                 spacing: 8px;
@@ -190,22 +201,36 @@ export component MainWindow inherits Window {
                     text: "↑ 上へ";
                     clicked => { root.go-up(); }
                 }
+                // アドレスバー（編集可能）。Enter で入力パスへジャンプを依頼する。
+                // エラー時は赤枠で縁取り、フォーカスを失ったら現在パスへ戻す（編集キャンセル）。
                 Rectangle {
                     horizontal-stretch: 1;
-                    background: Theme.surface;
+                    border-width: root.address-error ? 1px : 0px;
+                    border-color: Theme.error;
                     border-radius: 4px;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    Text {
-                        x: 8px;
-                        width: parent.width - 16px;
-                        height: parent.height;
-                        text: root.current-path;
-                        color: Theme.on-surface;
-                        vertical-alignment: center;
-                        overflow: elide;
+                    LineEdit {
+                        width: parent.width;
+                        placeholder-text: "パスを入力して Enter";
+                        text <=> root.address-bar-text;
+                        accepted(text) => { root.path-submitted(text); }
+                        // フォーカス喪失＝編集キャンセル: 現在パスへ戻し、エラー表示も消す。
+                        changed has-focus => {
+                            if (!self.has-focus) {
+                                root.address-bar-text = root.current-path;
+                                root.address-error = false;
+                            }
+                        }
                     }
                 }
+
+                // 検索バー: 入力のたびに現在ディレクトリ内をインクリメンタルに絞り込む。
+                LineEdit {
+                    width: 220px;
+                    placeholder-text: "🔍 フィルター...";
+                    text <=> root.filter-text;
+                    edited(text) => { root.filter-changed(text); }
+                }
+
                 if root.loading: Text {
                     text: "読み込み中…";
                     color: Theme.on-surface-variant;

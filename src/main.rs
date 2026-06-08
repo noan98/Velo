@@ -36,8 +36,9 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
 
     // 空の VecModel を一度だけ ListView に接続する。以後は set_vec で中身を入れ替える。
+    // フィルタ変更時に直接モデルを差し替えられるよう、ハンドルを 1 つ手元にも残す。
     let model = std::rc::Rc::new(VecModel::<FileRow>::default());
-    window.set_rows(ModelRc::from(model));
+    window.set_rows(ModelRc::from(model.clone()));
 
     // ソートの初期状態（名前・昇順）を UI のインジケータへ反映する。
     window.set_sort_column(sort_column_to_int(SortColumn::Name));
@@ -62,6 +63,67 @@ fn main() -> Result<(), slint::PlatformError> {
             let parent = APP.with(|app| app.borrow().current_dir.parent().map(Path::to_path_buf));
             if let Some(path) = parent {
                 navigate_to(weak.clone(), path);
+            }
+        }
+    });
+
+    // アドレスバーに入力されたパスへ直接ジャンプする（Enter で確定）。
+    // ディレクトリならそこへ、ファイルなら親ディレクトリへ移動。相対パスは
+    // 現在ディレクトリ基準で解決し、存在しなければエラー表示を出す。
+    window.on_path_submitted({
+        let weak = window.as_weak();
+        move |text| {
+            let input = text.trim();
+            if input.is_empty() {
+                return;
+            }
+
+            // 相対パスは現在ディレクトリ基準で絶対パスへ解決する。
+            let base = APP.with(|app| app.borrow().current_dir.clone());
+            let raw = PathBuf::from(input);
+            let resolved = if raw.is_relative() {
+                base.join(raw)
+            } else {
+                raw
+            };
+
+            // ディレクトリ → そこへ / ファイル → 親へ / それ以外 → エラー。
+            let target = if resolved.is_dir() {
+                Some(resolved)
+            } else if resolved.is_file() {
+                resolved.parent().map(Path::to_path_buf)
+            } else {
+                None
+            };
+
+            match target {
+                Some(dir) => navigate_to(weak.clone(), dir),
+                None => {
+                    // 解決できなかった旨をアドレスバーのエラー表示で知らせる。
+                    if let Some(window) = weak.upgrade() {
+                        window.set_address_error(true);
+                    }
+                }
+            }
+        }
+    });
+
+    // 検索バー: 現在ディレクトリ内のファイル名をインクリメンタルに絞り込む。
+    // I/O は伴わず、保持済みの全エントリ（AppState.entries）から一致分だけを
+    // UI スレッドで再構築してモデルに反映する（体感的に瞬時）。
+    // フィルタで表示件数が変わるため、選択はリセットしてズレを防ぐ。
+    window.on_filter_changed({
+        let weak = window.as_weak();
+        let model = model.clone();
+        move |text| {
+            let rows = APP.with(|app| {
+                let mut app = app.borrow_mut();
+                app.filter = text.to_string();
+                to_rows_from(app.visible_entries())
+            });
+            model.set_vec(rows);
+            if let Some(window) = weak.upgrade() {
+                window.set_selected_index(-1);
             }
         }
     });
@@ -138,7 +200,19 @@ fn activate_row(weak: Weak<MainWindow>, index: i32) {
 /// 監視ウォッチャの張り直しも行う。実体の読み込みは `load_dir` がワーカーで行う。
 fn navigate_to(weak: Weak<MainWindow>, path: PathBuf) {
     // current_dir は UI スレッドでだけ更新する。ここはコールバック内なので UI スレッド。
-    APP.with(|app| app.borrow_mut().current_dir = path.clone());
+    // 別ディレクトリへ移ったらフィルタは引き継がず解除する（新しい場所の全件を見せる）。
+    APP.with(|app| {
+        let mut app = app.borrow_mut();
+        app.current_dir = path.clone();
+        app.filter.clear();
+    });
+
+    // 検索バー・アドレスバーのエラー表示も、移動に合わせてリセットする。
+    if let Some(window) = weak.upgrade() {
+        window.set_filter_text(SharedString::new());
+        window.set_address_error(false);
+    }
+
     load_dir(weak, path, true);
 }
 
@@ -198,26 +272,6 @@ fn apply_listing(
         return;
     }
 
-    // モデルだけ差し替える（プロパティ全体の作り直しはしない）。
-    if let Some(vec_model) = window
-        .get_rows()
-        .as_any()
-        .downcast_ref::<VecModel<FileRow>>()
-    {
-        vec_model.set_vec(rows);
-    }
-
-    window.set_current_path(path.to_string_lossy().as_ref().into());
-    window.set_loading(false);
-
-    // エラー文言を反映（成功時は空文字でクリアし、ステータスバーを隠す）。
-    window.set_error_message(error.unwrap_or_default().as_str().into());
-
-    // ユーザー操作による移動のときは、新ディレクトリでは選択を一旦解除する。
-    if install_watcher {
-        window.set_selected_index(-1);
-    }
-
     // ユーザー操作による移動のときだけ、監視対象を新ディレクトリへ張り直す。
     let watcher = if install_watcher {
         make_watcher(window.as_weak(), &path)
@@ -225,13 +279,43 @@ fn apply_listing(
         None
     };
 
-    APP.with(|app| {
+    // エントリを保存し、現在のフィルタを適用した表示行を組み立てる。
+    // フィルタが空なら（ユーザー操作直後はここに来る）ワーカーが整形済みの rows を
+    // そのまま使う。フィルタ有効時（監視きっかけの再読み込み等）は一致分だけ作り直す。
+    let display_rows = APP.with(|app| {
         let mut app = app.borrow_mut();
         app.entries = entries;
         if install_watcher {
             app.watcher = watcher;
         }
+        if app.filter.is_empty() {
+            rows
+        } else {
+            to_rows_from(app.visible_entries())
+        }
     });
+
+    // モデルだけ差し替える（プロパティ全体の作り直しはしない）。
+    if let Some(vec_model) = window
+        .get_rows()
+        .as_any()
+        .downcast_ref::<VecModel<FileRow>>()
+    {
+        vec_model.set_vec(display_rows);
+    }
+
+    window.set_current_path(path.to_string_lossy().as_ref().into());
+    // ユーザー操作による移動のときは、アドレスバーの編集テキストを新パスへ合わせ、
+    // 新ディレクトリでは選択を一旦解除する。
+    // 監視きっかけの再読み込みでは（同じディレクトリなので）どちらも触らず、
+    // 編集中のアドレス入力や選択行を壊さない。
+    if install_watcher {
+        window.set_address_bar_text(path.to_string_lossy().as_ref().into());
+        window.set_selected_index(-1);
+    }
+    // エラー文言を反映（成功時は空文字でクリアし、ステータスバーを隠す）。
+    window.set_error_message(error.unwrap_or_default().as_str().into());
+    window.set_loading(false);
 }
 
 /// `path` を監視するウォッチャを作る。変更があれば（デバウンス後に）一覧を再読み込みする。
@@ -280,20 +364,29 @@ fn make_watcher(weak: Weak<MainWindow>, path: &Path) -> Option<fs::watcher::DirW
 /// ドメインのエントリ列を、表示用の `FileRow`（整形済み文字列）に変換する。
 /// 整形（サイズ・日時・アイコン）はワーカースレッド側で済ませ、UI スレッドの仕事を減らす。
 fn to_rows(entries: &[FileEntry]) -> Vec<FileRow> {
-    entries
-        .iter()
-        .map(|e| FileRow {
-            type_label: icon_for_entry(e).into(),
-            name: e.name.as_str().into(),
-            size: if e.is_dir {
-                SharedString::from("-")
-            } else {
-                format_size(e.size).into()
-            },
-            modified: format_time(e.modified).into(),
-            is_dir: e.is_dir,
-        })
-        .collect()
+    entries.iter().map(entry_to_row).collect()
+}
+
+/// `to_rows` のイテレータ版。フィルタ適用後の部分集合から行を作るのに使う
+/// （`AppState::visible_entries` をそのまま流し込めるようにするため）。
+fn to_rows_from<'a>(entries: impl Iterator<Item = &'a FileEntry>) -> Vec<FileRow> {
+    entries.map(entry_to_row).collect()
+}
+
+/// エントリ 1 件を表示用 `FileRow`（整形済み文字列）へ変換する。
+fn entry_to_row(e: &FileEntry) -> FileRow {
+    FileRow {
+        // アイコンは拡張子から決める（icon_for_entry）。SVG 化も差し替えで移行可能。
+        type_label: icon_for_entry(e).into(),
+        name: e.name.as_str().into(),
+        size: if e.is_dir {
+            SharedString::from("-")
+        } else {
+            format_size(e.size).into()
+        },
+        modified: format_time(e.modified).into(),
+        is_dir: e.is_dir,
+    }
 }
 
 /// エントリの種別を表す絵文字を返す（表示用ラベル）。
