@@ -1,0 +1,38 @@
+// アプリ全体のカラーパレット（テーマ基盤）。
+//
+// 設計意図（ジュニア向けメモ）:
+// * 色をここに集約し、各コンポーネントへの直書きを排除する。
+//   こうすると将来のテーマ変更（色の差し替え・カスタムテーマ追加）が 1 ファイルで済む。
+// * `dark-mode` は Windows のシステムテーマ（`Palette.color-scheme`）に既定で追従しつつ、
+//   トグルボタンで手動上書きもできるよう `in-out` にしている。
+//   （Rust から set すると追従バインディングは上書きされ、以後は手動値が優先される）
+// * 配色は Catppuccin（Mocha/Latte 系）を参考にした、長時間でも目に優しいトーン。
+//
+// 各色は `out`（読み取り専用の派生値）にして、参照側からは書き換えられないようにする。
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    // 起動時はシステムのカラースキームに追従。トグルで上書き可能。
+    in-out property <bool> dark-mode: Palette.color-scheme == ColorScheme.dark;
+
+    // 画面全体の背景。
+    out property <brush> background: dark-mode ? #1e1e2e : #ffffff;
+    // パネルやヘッダなど、背景から一段持ち上げた面。
+    out property <brush> surface: dark-mode ? #313244 : #f3f4f6;
+    // 一覧の交互カラー（奇数行）に使う、背景にごく近い面。
+    out property <brush> surface-alt: dark-mode ? #262636 : #fafbfc;
+    // 主たる文字色（背景・surface の上に乗る前景）。
+    out property <brush> on-surface: dark-mode ? #cdd6f4 : #1e1e2e;
+    // 補助的な文字色（サイズ・日時など控えめに見せたい情報）。
+    out property <brush> on-surface-variant: dark-mode ? #a6adc8 : #6c7086;
+    // 枠線・区切り線。
+    out property <brush> border: dark-mode ? #45475a : #e2e4e8;
+    // アクセント（ソート方向インジケータなど）。
+    out property <brush> accent: #89b4fa;
+    // ホバー時の行背景。
+    out property <brush> hover: dark-mode ? #45475a : #e8f0fe;
+    // 選択中の行背景。
+    out property <brush> selection: dark-mode ? #585b70 : #cfe0ff;
+    // エラー表示（ステータスバーの文字・背景）。
+    out property <brush> error: #f38ba8;
+}

@@ -1,9 +1,13 @@
 import { ListView, Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// Rust 側からダーク/ライトを切り替えられるよう、グローバルを公開 API として再エクスポートする。
+export { Theme }
 
 // 一覧の 1 行ぶんの「表示用」データ。
 // 整形済みの文字列だけを持ち、パス等の真実の源は Rust 側に置く（表示専用）。
 export struct FileRow {
-    // 種別を表す記号（後でアイコン画像に差し替え可能なよう、まずはテキスト）。
+    // 種別を表す記号（拡張子に応じた絵文字。Rust 側 to_rows で決定する）。
     type-label: string,
     name: string,
     size: string,
@@ -12,107 +16,273 @@ export struct FileRow {
     is-dir: bool,
 }
 
+// 列ヘッダ 1 セル。クリックでその列のソートを切り替える。
+// 現在ソート中の列には昇順/降順の方向インジケータ（▲/▼）を表示する。
+component SortHeader inherits Rectangle {
+    in property <string> label;
+    in property <int> column;          // この列の識別子（0=名前, 1=サイズ, 2=更新日時）。
+    in property <int> active-column;   // いま実際にソートされている列。
+    in property <bool> ascending;      // 昇順なら true。
+    in property <bool> align-right;    // サイズ列のように右寄せしたいとき true。
+    callback sort(int);
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.sort(root.column); }
+    }
+
+    HorizontalLayout {
+        spacing: 4px;
+        // 右寄せ列では中身を末尾側に寄せる（データ行の右寄せと見た目を合わせる）。
+        alignment: root.align-right ? end : start;
+        Text {
+            text: root.label;
+            font-weight: 700;
+            color: Theme.on-surface;
+            vertical-alignment: center;
+        }
+        // ソート中の列にだけ方向インジケータを出す（それ以外は空文字で非表示）。
+        Text {
+            text: root.active-column == root.column ? (root.ascending ? "▲" : "▼") : "";
+            color: Theme.accent;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// 一覧の 1 行。背景はテーマ色を参照し、選択 > ホバー > 交互カラー の優先順位で決める。
+component FileRowItem inherits Rectangle {
+    in property <FileRow> data;
+    in property <int> index;
+    in property <bool> selected;
+    callback clicked(int);
+    callback double-clicked(int);
+
+    height: 26px;
+    // 背景の優先順位: 選択 > ホバー > 交互カラー（偶数=背景色 / 奇数=やや沈んだ色）。
+    background: root.selected ? Theme.selection
+        : touch.has-hover ? Theme.hover
+        : Math.mod(root.index, 2) == 0 ? Theme.background
+        : Theme.surface-alt;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        // シングルクリックで選択（ハイライト更新）。ダブルクリックは既存のナビゲーション。
+        clicked => { root.clicked(root.index); }
+        double-clicked => { root.double-clicked(root.index); }
+    }
+
+    HorizontalBox {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+        Text {
+            text: root.data.type-label;
+            width: 48px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.data.name;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+            color: Theme.on-surface;
+        }
+        Text {
+            text: root.data.size;
+            width: 110px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: Theme.on-surface-variant;
+        }
+        Text {
+            text: root.data.modified;
+            width: 150px;
+            vertical-alignment: center;
+            color: Theme.on-surface-variant;
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Velo";
     preferred-width: 960px;
     preferred-height: 640px;
     min-width: 480px;
     min-height: 320px;
+    background: Theme.background;
+    // 起動時はキーボード操作の入口（FocusScope）にフォーカスを渡す。
+    forward-focus: scope;
 
     // ---- Rust から流し込む状態（表示専用）----
     in property <string> current-path;
     in property <[FileRow]> rows;
     in property <bool> loading;
+    // エラー文言（空文字ならステータスバーは出さない）。
+    in property <string> error-message;
+    // 現在のソート列と方向（ヘッダの方向インジケータ表示に使う）。
+    in property <int> sort-column;
+    in property <bool> sort-ascending;
+    // 選択中の行（-1 は未選択）。キーボード/クリックで更新される表示状態。
+    in-out property <int> selected-index: -1;
 
     // ---- UI からの操作を Rust へ伝えるコールバック ----
     // 引数は rows 内のインデックス。実際のパス解決は Rust 側で行う。
     callback row-double-clicked(int);
+    // Enter での実行（選択中フォルダに入る）。row-double-clicked と同じ意味。
+    callback row-activated(int);
     callback go-up();
+    // ヘッダクリックでのソート切替（引数は列識別子）。
+    callback sort-changed(int);
+    // ダーク/ライトの手動切替。
+    callback toggle-theme();
 
-    VerticalBox {
-        padding: 6px;
-        spacing: 6px;
+    // 選択を delta 行ぶん動かす（範囲内にクランプ）。空リストでは何もしない。
+    function move-selection(delta: int) {
+        if (root.rows.length == 0) {
+            return;
+        }
+        if (root.selected-index < 0) {
+            // 未選択からの初回は、下移動なら先頭・上移動なら末尾を選ぶ。
+            root.selected-index = delta > 0 ? 0 : root.rows.length - 1;
+        } else {
+            root.selected-index = Math.clamp(root.selected-index + delta, 0, root.rows.length - 1);
+        }
+    }
 
-        // ツールバー：上へボタン + アドレスバー（テキスト表示）+ 読み込み表示
-        HorizontalBox {
-            vertical-stretch: 0;
-            spacing: 8px;
-            Button {
-                text: "↑ 上へ";
-                clicked => { root.go-up(); }
+    scope := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        // キーボードナビゲーション: 矢印で選択移動 / Enter で実行 / Backspace で親へ。
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow) {
+                root.move-selection(-1);
+                return accept;
             }
-            Rectangle {
-                horizontal-stretch: 1;
-                background: #f0f0f0;
-                border-radius: 4px;
-                Text {
-                    x: 8px;
-                    width: parent.width - 16px;
-                    height: parent.height;
-                    text: root.current-path;
-                    vertical-alignment: center;
-                    overflow: elide;
+            if (event.text == Key.DownArrow) {
+                root.move-selection(1);
+                return accept;
+            }
+            if (event.text == Key.Return) {
+                if (root.selected-index >= 0) {
+                    root.row-activated(root.selected-index);
                 }
+                return accept;
             }
-            if root.loading: Text {
-                text: "読み込み中…";
-                color: #888;
-                vertical-alignment: center;
+            if (event.text == Key.Backspace) {
+                root.go-up();
+                return accept;
             }
+            return reject;
         }
 
-        // ヘッダ行（固定）。列幅は下のデータ行と揃える。
-        HorizontalBox {
-            vertical-stretch: 0;
-            padding-left: 8px;
-            padding-right: 8px;
-            spacing: 8px;
-            Text { text: "種別"; width: 48px; font-weight: 700; }
-            Text { text: "名前"; horizontal-stretch: 1; font-weight: 700; }
-            Text { text: "サイズ"; width: 110px; horizontal-alignment: right; font-weight: 700; }
-            Text { text: "更新日時"; width: 150px; font-weight: 700; }
-        }
+        VerticalBox {
+            padding: 6px;
+            spacing: 6px;
 
-        // 仮想化された一覧。可視範囲の行だけが実体化されるので大量件数でも軽い。
-        ListView {
-            vertical-stretch: 1;
-            for row[idx] in root.rows: Rectangle {
-                height: 26px;
-                background: touch.has-hover ? #e8f0fe : transparent;
-
-                touch := TouchArea {
-                    // フォルダはダブルクリックで中に入る。
-                    // この行の rows 内インデックスを Rust に渡し、パス解決は Rust 側で行う。
-                    double-clicked => { root.row-double-clicked(idx); }
+            // ツールバー：上へボタン + アドレスバー + 読み込み表示 + テーマ切替
+            HorizontalBox {
+                vertical-stretch: 0;
+                spacing: 8px;
+                Button {
+                    text: "↑ 上へ";
+                    clicked => { root.go-up(); }
                 }
-
-                HorizontalBox {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    spacing: 8px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.surface;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.border;
                     Text {
-                        text: row.type-label;
-                        width: 48px;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: row.name;
-                        horizontal-stretch: 1;
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        text: root.current-path;
+                        color: Theme.on-surface;
                         vertical-alignment: center;
                         overflow: elide;
                     }
-                    Text {
-                        text: row.size;
-                        width: 110px;
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
-                        color: #555;
+                }
+                if root.loading: Text {
+                    text: "読み込み中…";
+                    color: Theme.on-surface-variant;
+                    vertical-alignment: center;
+                }
+                Button {
+                    // ダーク時は太陽（ライトへ）、ライト時は月（ダークへ）を出す。
+                    text: Theme.dark-mode ? "☀" : "☾";
+                    clicked => { root.toggle-theme(); }
+                }
+            }
+
+            // ヘッダ行（固定）。各列クリックでソート切替。列幅はデータ行と揃える。
+            HorizontalBox {
+                vertical-stretch: 0;
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 8px;
+                // 種別列はソート対象外（固定ラベル）。
+                Text { text: "種別"; width: 48px; font-weight: 700; color: Theme.on-surface; }
+                SortHeader {
+                    label: "名前";
+                    column: 0;
+                    horizontal-stretch: 1;
+                    active-column: root.sort-column;
+                    ascending: root.sort-ascending;
+                    sort(c) => { root.sort-changed(c); }
+                }
+                SortHeader {
+                    label: "サイズ";
+                    column: 1;
+                    width: 110px;
+                    align-right: true;
+                    active-column: root.sort-column;
+                    ascending: root.sort-ascending;
+                    sort(c) => { root.sort-changed(c); }
+                }
+                SortHeader {
+                    label: "更新日時";
+                    column: 2;
+                    width: 150px;
+                    active-column: root.sort-column;
+                    ascending: root.sort-ascending;
+                    sort(c) => { root.sort-changed(c); }
+                }
+            }
+
+            // 仮想化された一覧。可視範囲の行だけが実体化されるので大量件数でも軽い。
+            ListView {
+                vertical-stretch: 1;
+                for row[idx] in root.rows: FileRowItem {
+                    data: row;
+                    index: idx;
+                    selected: idx == root.selected-index;
+                    clicked(i) => {
+                        root.selected-index = i;
+                        // クリックで一覧側にフォーカスを戻し、続けてキー操作できるようにする。
+                        scope.focus();
                     }
+                    double-clicked(i) => { root.row-double-clicked(i); }
+                }
+            }
+
+            // ステータスバー（エラー時のみ表示）。サイレント失敗を防ぐ。
+            if root.error-message != "": Rectangle {
+                vertical-stretch: 0;
+                height: 26px;
+                background: Theme.error.with-alpha(0.15);
+                border-radius: 4px;
+                HorizontalBox {
+                    padding-left: 8px;
+                    padding-right: 8px;
                     Text {
-                        text: row.modified;
-                        width: 150px;
+                        text: "⚠ " + root.error-message;
+                        color: Theme.error;
                         vertical-alignment: center;
-                        color: #555;
+                        overflow: elide;
                     }
                 }
             }
