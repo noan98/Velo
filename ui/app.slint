@@ -1,4 +1,4 @@
-import { ListView, Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { ListView, Button, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
 
 // 一覧の 1 行ぶんの「表示用」データ。
 // 整形済みの文字列だけを持ち、パス等の真実の源は Rust 側に置く（表示専用）。
@@ -23,17 +23,27 @@ export component MainWindow inherits Window {
     in property <string> current-path;
     in property <[FileRow]> rows;
     in property <bool> loading;
+    // アドレスバーの編集テキスト（双方向）。確定や移動のたびに Rust 側が現在パスへ更新する。
+    in-out property <string> address-bar-text;
+    // 入力されたパスが解決できなかったときに true。アドレスバーを赤く縁取りして知らせる。
+    in-out property <bool> address-error;
+    // 検索バーの絞り込み文字列（双方向）。移動時に Rust 側が空へ戻す。
+    in-out property <string> filter-text;
 
     // ---- UI からの操作を Rust へ伝えるコールバック ----
     // 引数は rows 内のインデックス。実際のパス解決は Rust 側で行う。
     callback row-double-clicked(int);
     callback go-up();
+    // アドレスバーで Enter が押されたとき、入力文字列を渡してパス解決を依頼する。
+    callback path-submitted(string);
+    // 検索バーの入力が変わるたびに、現在の絞り込み文字列を渡す。
+    callback filter-changed(string);
 
     VerticalBox {
         padding: 6px;
         spacing: 6px;
 
-        // ツールバー：上へボタン + アドレスバー（テキスト表示）+ 読み込み表示
+        // ツールバー：上へボタン + 編集可能アドレスバー + 検索バー + 読み込み表示
         HorizontalBox {
             vertical-stretch: 0;
             spacing: 8px;
@@ -41,19 +51,37 @@ export component MainWindow inherits Window {
                 text: "↑ 上へ";
                 clicked => { root.go-up(); }
             }
+
+            // アドレスバー（編集可能）。Enter で入力パスへジャンプを依頼する。
+            // エラー時は赤枠で縁取り、フォーカスを失ったら現在パスへ戻す（編集キャンセル）。
             Rectangle {
                 horizontal-stretch: 1;
-                background: #f0f0f0;
+                border-width: root.address-error ? 1px : 0px;
+                border-color: #d33;
                 border-radius: 4px;
-                Text {
-                    x: 8px;
-                    width: parent.width - 16px;
-                    height: parent.height;
-                    text: root.current-path;
-                    vertical-alignment: center;
-                    overflow: elide;
+                LineEdit {
+                    width: parent.width;
+                    placeholder-text: "パスを入力して Enter";
+                    text <=> root.address-bar-text;
+                    accepted(text) => { root.path-submitted(text); }
+                    // フォーカス喪失＝編集キャンセル: 現在パスへ戻し、エラー表示も消す。
+                    changed has-focus => {
+                        if (!self.has-focus) {
+                            root.address-bar-text = root.current-path;
+                            root.address-error = false;
+                        }
+                    }
                 }
             }
+
+            // 検索バー: 入力のたびに現在ディレクトリ内をインクリメンタルに絞り込む。
+            LineEdit {
+                width: 220px;
+                placeholder-text: "🔍 フィルター...";
+                text <=> root.filter-text;
+                edited(text) => { root.filter-changed(text); }
+            }
+
             if root.loading: Text {
                 text: "読み込み中…";
                 color: #888;
