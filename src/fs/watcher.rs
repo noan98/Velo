@@ -12,7 +12,8 @@ pub type DirWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
 
 /// 監視のデバウンス時間。`notify` の生イベントは 1 操作で複数飛ぶことがあるため、
 /// この時間まとめてから 1 回だけ通知する（受け入れ条件「数百ミリ秒以内」に収まる値）。
-const DEBOUNCE: Duration = Duration::from_millis(300);
+/// テストから参照できるよう `pub(crate)` にしている。
+pub(crate) const DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// `path` を非再帰で監視し、変更がデバウンスされて確定するたびに `on_change` を呼ぶ。
 /// 監視中にエラーが起きた場合は、まとめたメッセージで `on_error` を呼ぶ。
@@ -43,4 +44,142 @@ where
 
     debouncer.watch(path, RecursiveMode::NonRecursive)?;
     Ok(debouncer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // ---- ケース1: 存在するディレクトリを watch → Ok が返る ----
+
+    #[test]
+    fn watch_dir_存在するパスへの監視は成功する() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 存在するディレクトリを渡すと DirWatcher が正常に返るはず
+        let result = watch_dir(tmp.path(), || {}, |_| {});
+        assert!(result.is_ok(), "存在するディレクトリの監視は Ok を返すべき");
+    }
+
+    // ---- ケース2: ファイルを作成すると on_change コールバックが呼ばれる ----
+
+    #[test]
+    fn watch_dir_ファイル作成でコールバックが呼ばれる() {
+        let tmp = tempfile::tempdir().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_cb = Arc::clone(&counter);
+
+        // コールバック内でカウンタをインクリメントする
+        let _watcher = watch_dir(
+            tmp.path(),
+            move || {
+                counter_cb.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {},
+        )
+        .expect("監視の開始に失敗");
+
+        // ファイルを作成してイベントを発火させる
+        std::fs::File::create(tmp.path().join("test.txt")).unwrap();
+
+        // DEBOUNCE + 余裕分（400ms）待ってからカウンタを確認する。
+        // ファイルシステムイベントの到達には環境差があるため余裕を持った待機時間にしている。
+        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
+
+        assert!(
+            counter.load(Ordering::SeqCst) >= 1,
+            "ファイル作成後にコールバックが少なくとも 1 回呼ばれるべき"
+        );
+    }
+
+    // ---- ケース3: 300ms 以内の連続変更が 1 回のコールバックに畳み込まれる ----
+
+    #[test]
+    fn watch_dir_短時間の連続変更がデバウンスされる() {
+        let tmp = tempfile::tempdir().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_cb = Arc::clone(&counter);
+
+        let _watcher = watch_dir(
+            tmp.path(),
+            move || {
+                counter_cb.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {},
+        )
+        .expect("監視の開始に失敗");
+
+        // DEBOUNCE（300ms）未満の間隔で複数回ファイルを作成し、
+        // デバウンス後に集約されることを確認する。
+        // ファイルシステムの実装によってはイベントがさらにまとめられる場合もあるため、
+        // 「DEBOUNCE 内の 5 回変更がコールバック呼び出し件数より多い」ことだけを検証する
+        // （== 1 を強制すると OS/カーネル差でフレークするリスクがある）。
+        for i in 0..5u32 {
+            std::fs::File::create(tmp.path().join(format!("debounce_{i}.txt"))).unwrap();
+            // イベントをばらけさせず、DEBOUNCE 内に収まるよう間隔を小さくする
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        // デバウンス確定 + 余裕分（400ms）待つ
+        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
+
+        let calls = counter.load(Ordering::SeqCst);
+        assert!(
+            calls >= 1,
+            "変更後にコールバックが少なくとも 1 回呼ばれるべき (実際: {calls})"
+        );
+        // 5 回の変更がそれぞれ別コールバックになるよりも少なくなっていることを期待する。
+        // ただし環境によっては複数回届くこともあるため、上限は 5 回未満（< 5）で検証する。
+        assert!(
+            calls < 5,
+            "デバウンス処理により呼び出し回数は変更回数(5)より少ないはず (実際: {calls})"
+        );
+    }
+
+    // ---- ケース4: DirWatcher を drop すると以降の変更でコールバックが呼ばれない ----
+
+    #[test]
+    fn watch_dir_ドロップ後はコールバックが呼ばれない() {
+        let tmp = tempfile::tempdir().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_cb = Arc::clone(&counter);
+
+        let watcher = watch_dir(
+            tmp.path(),
+            move || {
+                counter_cb.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {},
+        )
+        .expect("監視の開始に失敗");
+
+        // まず watcher が動作していることを確認する
+        std::fs::File::create(tmp.path().join("before_drop.txt")).unwrap();
+        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
+        let count_before = counter.load(Ordering::SeqCst);
+        assert!(
+            count_before >= 1,
+            "drop 前のファイル作成でコールバックが呼ばれるべき"
+        );
+
+        // watcher を drop して監視を停止する
+        drop(watcher);
+
+        // drop 直後の内部クリーンアップが落ち着くまで少し待つ
+        std::thread::sleep(Duration::from_millis(100));
+
+        // drop 後のカウンタ値を記録しておく
+        let count_after_drop = counter.load(Ordering::SeqCst);
+
+        // drop 後にファイルを作成してもコールバックは呼ばれないはず
+        std::fs::File::create(tmp.path().join("after_drop.txt")).unwrap();
+        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
+
+        let count_final = counter.load(Ordering::SeqCst);
+        assert_eq!(
+            count_after_drop, count_final,
+            "DirWatcher を drop した後はファイル変更があってもコールバックが増えないはず"
+        );
+    }
 }
