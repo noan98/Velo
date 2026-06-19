@@ -65,6 +65,11 @@ component FileRowItem inherits Rectangle {
         : touch.has-hover ? Theme.hover
         : Math.mod(root.index, 2) == 0 ? Theme.background
         : Theme.surface-alt;
+    // #26: ホバー・選択の切替を滑らかにする（80ms / ease-out）。
+    animate background {
+        duration: 80ms;
+        easing: ease-out;
+    }
 
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -166,6 +171,8 @@ export component MainWindow inherits Window {
         height: 100%;
 
         // キーボードナビゲーション: 矢印で選択移動 / Enter で実行 / Backspace で親へ。
+        // #24: Home/End/PageUp/PageDown も処理する。
+        // #22: Ctrl+L でアドレスバーにフォーカスを移す。
         // （アドレスバー/検索バーにフォーカスがあるときは、その入力欄がキーを消費する。）
         key-pressed(event) => {
             if (event.text == Key.UpArrow) {
@@ -184,6 +191,36 @@ export component MainWindow inherits Window {
             }
             if (event.text == Key.Backspace) {
                 root.go-up();
+                return accept;
+            }
+            // #24: Home キー → 先頭行へジャンプ。
+            if (event.text == Key.Home) {
+                if (root.rows.length > 0) {
+                    root.selected-index = 0;
+                }
+                return accept;
+            }
+            // #24: End キー → 末尾行へジャンプ。
+            if (event.text == Key.End) {
+                if (root.rows.length > 0) {
+                    root.selected-index = root.rows.length - 1;
+                }
+                return accept;
+            }
+            // #24: PageUp → 可視行数ぶん上へ移動（行高さ 26px で概算）。
+            if (event.text == Key.PageUp) {
+                root.move-selection(0 - Math.max(1, Math.floor(listview.height / 26px)));
+                return accept;
+            }
+            // #24: PageDown → 可視行数ぶん下へ移動（行高さ 26px で概算）。
+            if (event.text == Key.PageDown) {
+                root.move-selection(Math.max(1, Math.floor(listview.height / 26px)));
+                return accept;
+            }
+            // #22: Ctrl+L → アドレスバーにフォーカスを移してテキストを全選択する。
+            if (event.modifiers.control && event.text == "l") {
+                addressbar.focus();
+                addressbar.select-all();
                 return accept;
             }
             return reject;
@@ -208,7 +245,8 @@ export component MainWindow inherits Window {
                     border-width: root.address-error ? 1px : 0px;
                     border-color: Theme.error;
                     border-radius: 4px;
-                    LineEdit {
+                    // #22: Ctrl+L でフォーカスを受け取れるよう addressbar という名前を付ける。
+                    addressbar := LineEdit {
                         width: parent.width;
                         placeholder-text: "パスを入力して Enter";
                         text <=> root.address-bar-text;
@@ -279,7 +317,8 @@ export component MainWindow inherits Window {
             }
 
             // 仮想化された一覧。可視範囲の行だけが実体化されるので大量件数でも軽い。
-            ListView {
+            // #24: PageUp/Down の可視行数計算に使うため listview という名前で参照できるようにする。
+            listview := ListView {
                 vertical-stretch: 1;
                 for row[idx] in root.rows: FileRowItem {
                     data: row;
