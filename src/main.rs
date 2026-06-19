@@ -180,17 +180,36 @@ fn main() -> Result<(), slint::PlatformError> {
 
 /// 行を「実行」する（ダブルクリック / Enter 共通の入口）。
 ///
-/// 行インデックスからエントリを引き、フォルダのときだけその中へ移動する。
-/// ファイルを開く操作は土台では未対応（後回しスコープ）。
+/// 行インデックスからエントリを引き、フォルダなら中へ移動し、
+/// ファイルなら OS のデフォルトアプリで開く。
+/// ファイルを開く処理はワーカースレッドで実行し、UI スレッドをブロックしない。
+/// 失敗時は `upgrade_in_event_loop` で UI スレッドに載せ替えてエラーを表示する。
 fn activate_row(weak: Weak<MainWindow>, index: i32) {
-    let target = APP.with(|app| {
+    // エントリから is_dir とパスを同時に取り出す。範囲外なら何もしない。
+    let entry = APP.with(|app| {
         app.borrow()
             .entry_at(index as usize)
-            .filter(|e| e.is_dir)
-            .map(|e| e.path.clone())
+            .map(|e| (e.is_dir, e.path.clone()))
     });
-    if let Some(path) = target {
+
+    let Some((is_dir, path)) = entry else {
+        return;
+    };
+
+    if is_dir {
+        // フォルダ → 従来どおりナビゲーション。
         navigate_to(weak, path);
+    } else {
+        // ファイル → OS デフォルトアプリで開く。I/O なのでワーカーへ移す。
+        std::thread::spawn(move || {
+            if let Err(e) = open::that(&path) {
+                // 失敗を UI スレッドへ持ち帰ってステータスバーに表示する。
+                let message = format!("開けませんでした: {e}");
+                let _ = weak.upgrade_in_event_loop(move |window| {
+                    window.set_error_message(message.as_str().into());
+                });
+            }
+        });
     }
 }
 
