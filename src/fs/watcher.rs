@@ -51,6 +51,24 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Instant;
+
+    /// `cond` が真になるまで短い間隔でポーリングし、成立したら true を返す。
+    /// `timeout` を超えても成立しなければ false。
+    ///
+    /// 固定スリープ（例: `DEBOUNCE + 400ms`）だけで待つと、CI の負荷や
+    /// ファイルシステム通知の遅延で「まだ届いていないのに時間切れ」になりフレークしやすい。
+    /// 条件成立で即座に抜け、遅い環境では上限まで粘る形にすることで、速さと安定性を両立する。
+    fn wait_until(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        cond()
+    }
 
     // ---- ケース1: 存在するディレクトリを watch → Ok が返る ----
 
@@ -83,12 +101,12 @@ mod tests {
         // ファイルを作成してイベントを発火させる
         std::fs::File::create(tmp.path().join("test.txt")).unwrap();
 
-        // DEBOUNCE + 余裕分（400ms）待ってからカウンタを確認する。
-        // ファイルシステムイベントの到達には環境差があるため余裕を持った待機時間にしている。
-        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
-
+        // コールバックが呼ばれるまでポーリングで待つ（上限は DEBOUNCE + 余裕の 1500ms）。
+        // 早く届けば即座に抜け、遅い環境でも上限まで粘るのでフレークしにくい。
         assert!(
-            counter.load(Ordering::SeqCst) >= 1,
+            wait_until(DEBOUNCE + Duration::from_millis(1500), || counter
+                .load(Ordering::SeqCst)
+                >= 1),
             "ファイル作成後にコールバックが少なくとも 1 回呼ばれるべき"
         );
     }
@@ -121,16 +139,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
         }
 
-        // デバウンス確定 + 余裕分（400ms）待つ
-        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
+        // まず「少なくとも 1 回はデバウンス後のコールバックが届く」までポーリングで待つ。
+        assert!(
+            wait_until(DEBOUNCE + Duration::from_millis(1500), || counter
+                .load(Ordering::SeqCst)
+                >= 1),
+            "変更後にコールバックが少なくとも 1 回呼ばれるべき"
+        );
+
+        // 「5 回の変更が 5 回のコールバックに膨らんでいない」という“起きないこと”の検証は
+        // ポーリングでは確かめられない（非事象は待つしかない）。最初のコールバック確定後、
+        // 後続のフラッシュが来ないことを確かめるため DEBOUNCE 分だけ落ち着かせてから上限を見る。
+        std::thread::sleep(DEBOUNCE + Duration::from_millis(200));
 
         let calls = counter.load(Ordering::SeqCst);
-        assert!(
-            calls >= 1,
-            "変更後にコールバックが少なくとも 1 回呼ばれるべき (実際: {calls})"
-        );
-        // 5 回の変更がそれぞれ別コールバックになるよりも少なくなっていることを期待する。
-        // ただし環境によっては複数回届くこともあるため、上限は 5 回未満（< 5）で検証する。
+        // 環境によっては複数回届くこともあるため、上限は 5 回未満（< 5）で検証する。
         assert!(
             calls < 5,
             "デバウンス処理により呼び出し回数は変更回数(5)より少ないはず (実際: {calls})"
@@ -154,12 +177,12 @@ mod tests {
         )
         .expect("監視の開始に失敗");
 
-        // まず watcher が動作していることを確認する
+        // まず watcher が動作していることを、コールバック到達までポーリングして確認する。
         std::fs::File::create(tmp.path().join("before_drop.txt")).unwrap();
-        std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
-        let count_before = counter.load(Ordering::SeqCst);
         assert!(
-            count_before >= 1,
+            wait_until(DEBOUNCE + Duration::from_millis(1500), || counter
+                .load(Ordering::SeqCst)
+                >= 1),
             "drop 前のファイル作成でコールバックが呼ばれるべき"
         );
 
@@ -172,7 +195,8 @@ mod tests {
         // drop 後のカウンタ値を記録しておく
         let count_after_drop = counter.load(Ordering::SeqCst);
 
-        // drop 後にファイルを作成してもコールバックは呼ばれないはず
+        // drop 後にファイルを作成してもコールバックは呼ばれないはず。
+        // これも“起きないこと”の検証なので、十分な時間（DEBOUNCE + 余裕）待ってから確認する。
         std::fs::File::create(tmp.path().join("after_drop.txt")).unwrap();
         std::thread::sleep(DEBOUNCE + Duration::from_millis(400));
 
