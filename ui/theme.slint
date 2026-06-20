@@ -1,7 +1,7 @@
-// アプリ全体のカラーパレット（テーマ基盤）。
+// アプリ全体のカラーパレットとタイポグラフィ定義（テーマ基盤）。
 //
 // 設計意図（ジュニア向けメモ）:
-// * 色をここに集約し、各コンポーネントへの直書きを排除する。
+// * 色・フォントをここに集約し、各コンポーネントへの直書きを排除する。
 //   こうすると将来のテーマ変更（色の差し替え・カスタムテーマ追加）が 1 ファイルで済む。
 // * `dark-mode` は Windows のシステムテーマ（`Palette.color-scheme`）に既定で追従しつつ、
 //   トグルボタンで手動上書きもできるよう `in-out` にしている。
@@ -10,6 +10,30 @@
 //
 // 各色は `out`（読み取り専用の派生値）にして、参照側からは書き換えられないようにする。
 import { Palette } from "std-widgets.slint";
+
+// タイポグラフィ定数（フォントファミリー・サイズ・ウェイト）。
+//
+// 設計意図（ジュニア向けメモ）:
+// * フォント設定を一箇所にまとめることで、将来のフォント差し替えが容易になる。
+// * サイズ列・更新日時列にはモノスペースフォントを使い、桁が縦に揃うようにする。
+//   フォールバック順: Cascadia Code（Windows Terminal 付属）→ Consolas（Windows 標準等幅）
+//   → monospace（OS の既定等幅フォント）。
+// * `ui-font` は Segoe UI 相当の可変幅 UI フォント（ファイル名など）。
+// * ウェイト定数は int で定義し、Text.font-weight へ直接代入できるようにする。
+export global Typography {
+    // UI フォント: ファイル名などの可変幅テキストに使う（Windows 標準 Segoe UI 相当）。
+    out property <string> ui-font: "Segoe UI, sans-serif";
+    // モノスペースフォント: サイズ・更新日時列の桁揃えに使う。
+    out property <string> mono-font: "Cascadia Code, Consolas, monospace";
+    // 本文サイズ（行テキスト全般）。
+    out property <length> body-size: 13px;
+    // ヘッダサイズ（列ヘッダのラベル）。
+    out property <length> header-size: 12px;
+    // フォントウェイト定数（数値で指定するため int で定義）。
+    out property <int> regular: 400;
+    out property <int> medium: 500;
+    out property <int> bold: 600;
+}
 
 export global Theme {
     // 起動時はシステムのカラースキームに追従。トグルで上書き可能。
