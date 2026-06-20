@@ -19,7 +19,11 @@ jobs:
     # ユニットテストは Linux でも問題なく動く。
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # セキュリティ方針に従い、サードパーティ Action はコミットハッシュにピン留めする。
+      # このワークフローは認証情報を必要としないため persist-credentials は無効化する。
+      - uses: actions/checkout@3883064154cdcc2f87b2fc16f6fcfa9a2cb3f0ba # v4.0.0
+        with:
+          persist-credentials: false
 
       # Slint は Linux でビルドするとき fontconfig 等のシステムライブラリを必要とする
       # （ターゲットは Windows だが、tarpaulin 計測のため Linux 上でビルド・テストするため）。
@@ -36,10 +40,10 @@ jobs:
             libxkbcommon-dev
 
       - name: Rust ツールチェーンのセットアップ
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@bb29f940001edcc4939b6f2de899c3cc1ecb00e8 # stable
 
       - name: キャッシュ（cargo レジストリ・ビルドキャッシュ）
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075b9493433ad8cbda3b0 # v2.7.3
 
       # tarpaulin のインストール。--locked で再現性を担保する。
       # CI 毎のインストール時間は rust-cache で軽減される。
@@ -66,7 +70,7 @@ jobs:
       # Cobertura XML からカバレッジ率のサマリーを生成してジョブサマリーに書き出す。
       # thresholds は参考値として設定する（失敗扱いにしない）。
       - name: カバレッジサマリーをジョブサマリーに出力
-        uses: irongut/CodeCoverageSummary@v1.3.0
+        uses: irongut/CodeCoverageSummary@51cc4a37cfa3cac768d1aa06cba2351bbb3b43bb # v1.3.0
         with:
           filename: coverage/cobertura.xml
           badge: false

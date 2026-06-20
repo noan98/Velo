@@ -175,7 +175,11 @@ impl AppState {
 
         // バッファが同じ1文字の繰り返しかどうか判定する。
         // 例: "aaa" → true、"ab" → false、"a" → true（1文字は繰り返しとして扱う）。
-        let is_repeated_single = buf_lower.chars().all(|c| c.to_string() == ch_lower);
+        // 反復ごとの String 確保を避けるため、`ch_lower` を 1 文字に分解して直接比較する。
+        let is_repeated_single = match ch_lower.chars().next() {
+            Some(first) => ch_lower.chars().count() == 1 && buf_lower.chars().all(|c| c == first),
+            None => false,
+        };
 
         let entries: Vec<_> = self.visible_entries().collect();
         let total = entries.len();
