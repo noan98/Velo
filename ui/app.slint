@@ -223,6 +223,14 @@ export component MainWindow inherits Window {
                 addressbar.select-all();
                 return accept;
             }
+            // #38: `/` キー → フィルタバーにフォーカスを移す。
+            // 入力欄が空になるよう事前にクリアしてから `select-all` で既存テキストを選択状態にする。
+            // こうすることで、すでにフィルタが入っている状態でも即座に上書きできる。
+            if (event.text == "/") {
+                filterbar.focus();
+                filterbar.select-all();
+                return accept;
+            }
             return reject;
         }
 
@@ -262,11 +270,32 @@ export component MainWindow inherits Window {
                 }
 
                 // 検索バー: 入力のたびに現在ディレクトリ内をインクリメンタルに絞り込む。
-                LineEdit {
+                // `/ ` キー（FocusScope の key-pressed）でフォーカスが移動してくる。
+                // Escape でフィルタをクリアしてリスト側にフォーカスを戻す。
+                // Enter（フィルタ有効時）で先頭の一致行を選択する。
+                filterbar := LineEdit {
                     width: 220px;
-                    placeholder-text: "🔍 フィルター...";
+                    placeholder-text: "🔍 フィルター（/ で起動）";
                     text <=> root.filter-text;
                     edited(text) => { root.filter-changed(text); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            // フィルタをクリアして元の全件表示に戻す。
+                            root.filter-text = "";
+                            root.filter-changed("");
+                            scope.focus();
+                            return accept;
+                        }
+                        if (event.text == Key.Return) {
+                            // 絞り込み結果が 1 件以上あれば先頭行を選択してリストにフォーカスを移す。
+                            if (root.rows.length > 0) {
+                                root.selected-index = 0;
+                                scope.focus();
+                            }
+                            return accept;
+                        }
+                        return reject;
+                    }
                 }
 
                 if root.loading: Text {
