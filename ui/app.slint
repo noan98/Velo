@@ -130,8 +130,10 @@ export component MainWindow inherits Window {
     in-out property <bool> address-error;
     // 検索バーの絞り込み文字列（双方向）。移動時に Rust 側が空へ戻す。
     in-out property <string> filter-text;
-    // エラー文言（空文字ならステータスバーは出さない）。
+    // エラー文言（空文字なら通常情報を表示）。
     in property <string> error-message;
+    // フィルタ前の全件数（フィルタ有効時に「全 N 件中」を表示するために使う）。
+    in property <int> total-count;
     // 現在のソート列と方向（ヘッダの方向インジケータ表示に使う）。
     in property <int> sort-column;
     in property <bool> sort-ascending;
@@ -333,18 +335,30 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ステータスバー（エラー時のみ表示）。サイレント失敗を防ぐ。
-            if root.error-message != "": Rectangle {
+            // ステータスバー（常時表示）。
+            // エラー時は赤背景でエラー文言を出す。通常時はアイテム数・選択情報を表示する。
+            Rectangle {
                 vertical-stretch: 0;
                 height: 26px;
-                background: Theme.error.with-alpha(0.15);
+                // エラーがあるときだけ赤背景。通常時は透明。
+                background: root.error-message != "" ? Theme.error.with-alpha(0.15) : transparent;
                 border-radius: 4px;
                 HorizontalBox {
                     padding-left: 8px;
                     padding-right: 8px;
                     Text {
-                        text: "⚠ " + root.error-message;
-                        color: Theme.error;
+                        // エラーあり → 警告アイコン付きエラー文言を優先する。
+                        // なし・フィルタ中 → "3 件（全 25 件中）"、フィルタなし → "25 件"。
+                        // 選択中（selected-index >= 0）なら末尾に " | "foo.txt" を選択中" を付ける。
+                        text: root.error-message != ""
+                            ? "⚠ " + root.error-message
+                            : (root.rows.length != root.total-count
+                                ? root.rows.length + " 件（全 " + root.total-count + " 件中）"
+                                : root.rows.length + " 件")
+                            + (root.selected-index >= 0
+                                ? " | \u{201C}" + root.rows[root.selected-index].name + "\u{201D} を選択中"
+                                : "");
+                        color: root.error-message != "" ? Theme.error : Theme.on-surface-variant;
                         vertical-alignment: center;
                         overflow: elide;
                     }
