@@ -185,6 +185,25 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // ブレッドクラムのセグメントがクリックされたとき、その階層のパスへ移動する（#49）。
+    // セグメントリストの先頭から i+1 個を結合してパスを構築し、navigate_to へ渡す。
+    // Windows のドライブ表記（"C:" 等）と残りのコンポーネントを PathBuf で組み立てる。
+    window.on_segment_clicked({
+        let weak = window.as_weak();
+        move |index| {
+            // セグメント文字列を APP から取得するのではなく、現在の current_dir を
+            // Path::components() で分解して先頭 index+1 個を結合する。
+            // こうすると Slint 側の文字列と Rust 側のパス表現がずれるリスクを避けられる。
+            let path = APP.with(|app| {
+                let app = app.borrow();
+                build_path_from_components(&app.current_dir, index as usize)
+            });
+            if let Some(p) = path {
+                navigate_to(weak.clone(), p);
+            }
+        }
+    });
+
     // ダーク/ライトの手動切替。テーマはグローバルとして UI 側に持ち、ここでは反転だけ行う。
     window.on_toggle_theme({
         let weak = window.as_weak();
@@ -433,6 +452,14 @@ fn apply_listing(
     // フィルタ前の全件数をステータスバーへ渡す（フィルタ中は "N 件（全 M 件中）" と表示される）。
     window.set_total_count(total_count as i32);
     window.set_current_path(path.to_string_lossy().as_ref().into());
+
+    // ブレッドクラム用のパスセグメントを生成して Slint へ渡す（#49）。
+    // Path::components() でセグメントに分解し、表示用文字列に変換する。
+    // 例: "C:\Users\user\Documents" → ["C:", "Users", "user", "Documents"]
+    let segments = path_to_segments(&path);
+    let segment_model = std::rc::Rc::new(VecModel::<SharedString>::from(segments));
+    window.set_path_segments(ModelRc::from(segment_model));
+
     // ユーザー操作による移動のときは、アドレスバーの編集テキストを新パスへ合わせ、
     // 新ディレクトリでは選択を一旦解除する。
     // 監視きっかけの再読み込みでは（同じディレクトリなので）どちらも触らず、
@@ -543,6 +570,89 @@ fn icon_for_entry(entry: &FileEntry) -> &'static str {
         Some("exe" | "msi") => "🖥",
         _ => "📄",
     }
+}
+
+/// パスを表示用セグメント列に分解する（ブレッドクラム用、#49）。
+///
+/// `Path::components()` で各部分を取り出し、表示に適した文字列に変換する。
+/// Windows では "C:\" は Prefix + RootDir に分かれるため、ドライブ名（"C:"）だけを
+/// 先頭に置き、以降のコンポーネントはフォルダ名として並べる。
+/// Linux/macOS の絶対パスでは RootDir が "/" になるため先頭は "/" を出す。
+fn path_to_segments(path: &Path) -> Vec<SharedString> {
+    use std::path::Component;
+    let mut segments: Vec<SharedString> = Vec::new();
+    for component in path.components() {
+        match component {
+            // Windows: "C:\" → Prefix は "C:" として先頭へ。RootDir（"\"）は飲み込む。
+            Component::Prefix(prefix) => {
+                let s = prefix.as_os_str().to_string_lossy().into_owned();
+                segments.push(SharedString::from(s));
+            }
+            // RootDir は単独 "/" のみの場合（Unix ルート）に先頭へ追加。
+            // Windows の "\" は Prefix の直後に続くだけなので、Prefix がない場合のみ追加。
+            Component::RootDir => {
+                if segments.is_empty() {
+                    segments.push(SharedString::from("/"));
+                }
+            }
+            Component::Normal(name) => {
+                segments.push(SharedString::from(name.to_string_lossy().as_ref()));
+            }
+            // "." や ".." は normalize 済みとして無視する（PathBuf は通常解決済み）。
+            Component::CurDir | Component::ParentDir => {}
+        }
+    }
+    segments
+}
+
+/// ブレッドクラムのインデックス `i` に対応するパスを構築する（#49）。
+///
+/// `current_dir` を `components()` で分解し、先頭から `i+1` 個を結合して PathBuf を返す。
+/// インデックスが範囲外の場合は `None`。
+fn build_path_from_components(current_dir: &Path, index: usize) -> Option<PathBuf> {
+    use std::path::Component;
+    // コンポーネントを収集（RootDir は Prefix の直後に続くため両方を保持する）。
+    let components: Vec<Component<'_>> = current_dir.components().collect();
+    // RootDir を Prefix にマージした「論理セグメント」列を作る。
+    // Prefix + RootDir の連続は 1 セグメント扱いとし、残りは Normal が 1 セグメント。
+    let mut logical: Vec<Vec<Component<'_>>> = Vec::new();
+    let mut i_comp = 0usize;
+    while i_comp < components.len() {
+        match &components[i_comp] {
+            Component::Prefix(_) => {
+                // Prefix に続く RootDir があれば同じセグメントにまとめる。
+                let mut seg = vec![components[i_comp]];
+                if i_comp + 1 < components.len() {
+                    if let Component::RootDir = &components[i_comp + 1] {
+                        seg.push(components[i_comp + 1]);
+                        i_comp += 1;
+                    }
+                }
+                logical.push(seg);
+            }
+            Component::RootDir => {
+                // Unix ルート "/" は単独セグメント。
+                logical.push(vec![components[i_comp]]);
+            }
+            Component::Normal(_) | Component::CurDir | Component::ParentDir => {
+                logical.push(vec![components[i_comp]]);
+            }
+        }
+        i_comp += 1;
+    }
+
+    if index >= logical.len() {
+        return None;
+    }
+
+    // 先頭から index+1 個の論理セグメントを PathBuf に変換する。
+    let mut result = PathBuf::new();
+    for group in &logical[..=index] {
+        for comp in group {
+            result.push(comp);
+        }
+    }
+    Some(result)
 }
 
 /// Slint から渡る列識別子（int）を `SortColumn` に変換する。未知の値は名前列に倒す。
