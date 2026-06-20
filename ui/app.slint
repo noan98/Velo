@@ -1,8 +1,70 @@
-import { ListView, Button, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
+import { ListView, Button, HorizontalBox, VerticalBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // Rust 側からダーク/ライトを切り替えられるよう、グローバルを公開 API として再エクスポートする。
 export { Theme }
+
+// パス階層をクリック可能なセグメント列で表示するブレッドクラムバー。
+// 各セグメントをクリックするとその階層へ移動するためのコールバックを発火する。
+// セグメントが多い場合は横スクロール可能で、最後のセグメントが右端に来るよう設計する。
+component BreadcrumbBar inherits Rectangle {
+    in property <[string]> segments;
+    callback segment-clicked(int);
+
+    height: 28px;
+    background: Theme.surface;
+    border-radius: 4px;
+    clip: true;
+
+    // セグメントをフラットな HorizontalLayout に並べる。
+    // ScrollView は水平スクロール対応だが Slint の標準 ScrollView はタッチ/マウスホイール方向に
+    // 依存するため、ここでは単純なレイアウトクリップで省スペース対応にする。
+    HorizontalLayout {
+        alignment: start;
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 0px;
+
+        for seg[i] in root.segments: HorizontalLayout {
+            spacing: 0px;
+            alignment: center;
+
+            // セグメント名（クリック可能）。
+            seg-touch := TouchArea {
+                mouse-cursor: pointer;
+                // クロージャが i を捕捉するため、各反復でコピーが作られる。
+                clicked => { root.segment-clicked(i); }
+
+                Rectangle {
+                    border-radius: 3px;
+                    background: seg-touch.has-hover ? Theme.hover : transparent;
+                    animate background { duration: 80ms; easing: ease-out; }
+
+                    HorizontalLayout {
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        Text {
+                            text: seg;
+                            color: i == root.segments.length - 1 ? Theme.on-surface : Theme.on-surface-variant;
+                            font-weight: i == root.segments.length - 1 ? 600 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // セグメント間の区切り文字 "›"（最後のセグメントの後には付けない）。
+            if i < root.segments.length - 1: Text {
+                text: " › ";
+                color: Theme.on-surface-variant;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
 
 // 一覧の 1 行ぶんの「表示用」データ。
 // 整形済みの文字列だけを持ち、パス等の真実の源は Rust 側に置く（表示専用）。
@@ -137,6 +199,9 @@ export component MainWindow inherits Window {
     in property <bool> sort-ascending;
     // 選択中の行（-1 は未選択）。キーボード/クリックで更新される表示状態。
     in-out property <int> selected-index: -1;
+    // ブレッドクラム表示用のパスセグメント列。Rust 側が current-path から生成して流し込む。
+    // 先頭は "C:" のようなドライブ/ルート、以降は各フォルダ名。
+    in property <[string]> path-segments;
 
     // ---- UI からの操作を Rust へ伝えるコールバック ----
     // 引数は rows 内のインデックス。実際のパス解決は Rust 側で行う。
@@ -152,6 +217,9 @@ export component MainWindow inherits Window {
     callback sort-changed(int);
     // ダーク/ライトの手動切替。
     callback toggle-theme();
+    // ブレッドクラムのセグメントがクリックされたとき、インデックスを Rust に通知する。
+    // Rust 側は先頭から i+1 個のセグメントを結合してパスを構築し navigate_to へ渡す。
+    callback segment-clicked(int);
 
     // 選択を delta 行ぶん動かす（範囲内にクランプ）。空リストでは何もしない。
     function move-selection(delta: int) {
@@ -230,7 +298,7 @@ export component MainWindow inherits Window {
             padding: 6px;
             spacing: 6px;
 
-            // ツールバー：上へボタン + 編集可能アドレスバー + 検索バー + 読み込み表示 + テーマ切替
+            // ツールバー：上へボタン + ブレッドクラムバー + 検索バー + 読み込み表示 + テーマ切替
             HorizontalBox {
                 vertical-stretch: 0;
                 spacing: 8px;
@@ -238,24 +306,42 @@ export component MainWindow inherits Window {
                     text: "↑ 上へ";
                     clicked => { root.go-up(); }
                 }
-                // アドレスバー（編集可能）。Enter で入力パスへジャンプを依頼する。
-                // エラー時は赤枠で縁取り、フォーカスを失ったら現在パスへ戻す（編集キャンセル）。
-                Rectangle {
+                // ブレッドクラムバー: パス階層をセグメントで表示しクリックで移動する（#49）。
+                // Ctrl+L でアドレスバーが開いているときはその下に重ならないよう、
+                // ブレッドクラムとアドレスバーを vertical に積み、
+                // アドレスバーのフォーカスで入れ替える方式をとる。
+                // ここでは「ブレッドクラム+アドレスバーを vertical に積んだ領域」を 1 列に確保する。
+                VerticalLayout {
                     horizontal-stretch: 1;
-                    border-width: root.address-error ? 1px : 0px;
-                    border-color: Theme.error;
-                    border-radius: 4px;
-                    // #22: Ctrl+L でフォーカスを受け取れるよう addressbar という名前を付ける。
-                    addressbar := LineEdit {
-                        width: parent.width;
-                        placeholder-text: "パスを入力して Enter";
-                        text <=> root.address-bar-text;
-                        accepted(text) => { root.path-submitted(text); }
-                        // フォーカス喪失＝編集キャンセル: 現在パスへ戻し、エラー表示も消す。
-                        changed has-focus => {
-                            if (!self.has-focus) {
-                                root.address-bar-text = root.current-path;
-                                root.address-error = false;
+                    spacing: 2px;
+
+                    // ブレッドクラムバー（常時表示）。
+                    BreadcrumbBar {
+                        horizontal-stretch: 1;
+                        segments: root.path-segments;
+                        segment-clicked(i) => { root.segment-clicked(i); }
+                    }
+
+                    // アドレスバー（編集可能）。Enter で入力パスへジャンプを依頼する。
+                    // エラー時は赤枠で縁取り、フォーカスを失ったら現在パスへ戻す（編集キャンセル）。
+                    // Ctrl+L でフォーカスを受け取る（#22）。ブレッドクラムと共存する（#49）。
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        border-width: root.address-error ? 1px : 0px;
+                        border-color: Theme.error;
+                        border-radius: 4px;
+                        // #22: Ctrl+L でフォーカスを受け取れるよう addressbar という名前を付ける。
+                        addressbar := LineEdit {
+                            width: parent.width;
+                            placeholder-text: "Ctrl+L でパスを直接入力（Enter で確定）";
+                            text <=> root.address-bar-text;
+                            accepted(text) => { root.path-submitted(text); }
+                            // フォーカス喪失＝編集キャンセル: 現在パスへ戻し、エラー表示も消す。
+                            changed has-focus => {
+                                if (!self.has-focus) {
+                                    root.address-bar-text = root.current-path;
+                                    root.address-error = false;
+                                }
                             }
                         }
                     }
