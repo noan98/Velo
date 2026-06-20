@@ -67,6 +67,18 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // 「戻る」: 直前のディレクトリへ戻る（戻る履歴がなければ何もしない）。
+    window.on_go_back({
+        let weak = window.as_weak();
+        move || navigate_back(weak.clone())
+    });
+
+    // 「進む」: 戻った後にひとつ進む（進む履歴がなければ何もしない）。
+    window.on_go_forward({
+        let weak = window.as_weak();
+        move || navigate_forward(weak.clone())
+    });
+
     // アドレスバーに入力されたパスへ直接ジャンプする（Enter で確定）。
     // ディレクトリならそこへ、ファイルなら親ディレクトリへ移動。相対パスは
     // 現在ディレクトリ基準で解決し、存在しなければエラー表示を出す。
@@ -215,13 +227,21 @@ fn activate_row(weak: Weak<MainWindow>, index: i32) {
 
 /// 別ディレクトリへ移動する（ユーザー操作の入口）。
 ///
-/// `current_dir` を即座に更新し（最後に要求された移動が勝つようにするため）、
+/// 現在ディレクトリを戻る履歴に積み、進む履歴をクリアしてから `current_dir` を更新する。
 /// 監視ウォッチャの張り直しも行う。実体の読み込みは `load_dir` がワーカーで行う。
+///
+/// 「戻る/進む」経由の移動は別関数（`navigate_back`/`navigate_forward`）を使い、
+/// この関数を通らないことでスタック操作のループを防ぐ。
 fn navigate_to(weak: Weak<MainWindow>, path: PathBuf) {
     // current_dir は UI スレッドでだけ更新する。ここはコールバック内なので UI スレッド。
     // 別ディレクトリへ移ったらフィルタは引き継がず解除する（新しい場所の全件を見せる）。
     APP.with(|app| {
         let mut app = app.borrow_mut();
+        // 現在地を戻る履歴に積む（空パス＝起動直後は積まない）。
+        let prev = app.current_dir.clone();
+        if prev != PathBuf::new() {
+            app.push_history(prev);
+        }
         app.current_dir = path.clone();
         app.filter.clear();
     });
@@ -230,9 +250,76 @@ fn navigate_to(weak: Weak<MainWindow>, path: PathBuf) {
     if let Some(window) = weak.upgrade() {
         window.set_filter_text(SharedString::new());
         window.set_address_error(false);
+        update_history_buttons(&window);
     }
 
     load_dir(weak, path, true);
+}
+
+/// 「戻る」操作専用の移動関数。
+///
+/// `navigate_to` は呼ばず（履歴を通常ナビゲーションとして積まないよう）、
+/// `AppState::pop_back` でスタック操作だけ行ってから `load_dir` を呼ぶ。
+fn navigate_back(weak: Weak<MainWindow>) {
+    let dest = APP.with(|app| app.borrow_mut().pop_back());
+    let Some(path) = dest else {
+        return;
+    };
+
+    APP.with(|app| {
+        let mut app = app.borrow_mut();
+        app.current_dir = path.clone();
+        app.filter.clear();
+    });
+
+    if let Some(window) = weak.upgrade() {
+        window.set_filter_text(SharedString::new());
+        window.set_address_error(false);
+        update_history_buttons(&window);
+    }
+
+    load_dir(weak, path, true);
+}
+
+/// 「進む」操作専用の移動関数。
+///
+/// `navigate_to` は呼ばず（履歴を通常ナビゲーションとして積まないよう）、
+/// `AppState::pop_forward` でスタック操作だけ行ってから `load_dir` を呼ぶ。
+fn navigate_forward(weak: Weak<MainWindow>) {
+    let dest = APP.with(|app| app.borrow_mut().pop_forward());
+    let Some(path) = dest else {
+        return;
+    };
+
+    APP.with(|app| {
+        let mut app = app.borrow_mut();
+        app.current_dir = path.clone();
+        app.filter.clear();
+    });
+
+    if let Some(window) = weak.upgrade() {
+        window.set_filter_text(SharedString::new());
+        window.set_address_error(false);
+        update_history_buttons(&window);
+    }
+
+    load_dir(weak, path, true);
+}
+
+/// 「戻る」「進む」ボタンの `enabled` 状態を現在の履歴スタックに合わせて更新する。
+///
+/// 履歴が空のときはボタンを無効化し、誤操作を防ぐ。
+/// ナビゲーション操作のたびに呼んで UI と状態を同期させる。
+fn update_history_buttons(window: &MainWindow) {
+    let (can_back, can_forward) = APP.with(|app| {
+        let app = app.borrow();
+        (
+            !app.history_back.is_empty(),
+            !app.history_forward.is_empty(),
+        )
+    });
+    window.set_can_go_back(can_back);
+    window.set_can_go_forward(can_forward);
 }
 
 /// `path` の内容をワーカースレッドで読み込み、完了後に UI へ反映する。
