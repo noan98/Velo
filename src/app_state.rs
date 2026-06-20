@@ -62,6 +62,16 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// ワーカーが返してきた読み込み結果を UI に反映してよいかを判定する。
+    ///
+    /// 「最後のナビゲーションが勝つ」ガードの核心。`navigate_to` が `current_dir` を
+    /// 即座に更新するため、読み込み完了時点で `current_dir` が変わっていれば、その結果は
+    /// **古いナビゲーションに対するもの**であり捨てなければならない。
+    /// パス比較だけで判断するためフィルタ状態には依存せず、純粋に「目的地が一致するか」を返す。
+    pub fn should_apply(&self, path: &std::path::Path) -> bool {
+        self.current_dir == path
+    }
+
     /// 表示中（フィルタ適用後）の行インデックスから、対応するエントリを引く。
     ///
     /// UI 側のインデックスは「フィルタ後の表示行」基準なので、ここでも同じ条件で
@@ -232,5 +242,81 @@ mod tests {
         state.filter = String::new();
         let all: Vec<_> = state.visible_entries().map(|e| e.name.as_str()).collect();
         assert_eq!(all, ["foo.txt", "bar.txt", "baz.txt"]);
+    }
+
+    // ---- should_apply のテスト群 ----
+
+    /// `current_dir` と渡したパスが一致するとき `should_apply` が true を返す。
+    ///
+    /// これが「反映してよい」という最もシンプルなケース。
+    #[test]
+    fn should_apply_returns_true_when_paths_match() {
+        let dir = PathBuf::from("/home/user/documents");
+        let state = AppState {
+            current_dir: dir.clone(),
+            ..AppState::default()
+        };
+        assert!(state.should_apply(&dir));
+    }
+
+    /// `current_dir` と渡したパスが異なるとき `should_apply` が false を返す。
+    ///
+    /// 古いナビゲーションの結果は捨てなければならない——それがこのガードの存在意義。
+    #[test]
+    fn should_apply_returns_false_when_paths_differ() {
+        let state = AppState {
+            current_dir: PathBuf::from("/home/user/documents"),
+            ..AppState::default()
+        };
+        assert!(!state.should_apply(std::path::Path::new("/home/user/downloads")));
+    }
+
+    /// 連続ナビゲーション後、最後のパスにだけ true、古いパスには false を返す。
+    ///
+    /// 「最後のナビゲーションが勝つ」の核心：複数回 current_dir を更新した後は
+    /// 最後に設定したパスだけが有効で、それ以前のパスはすべて古い結果とみなす。
+    #[test]
+    fn should_apply_only_last_navigation_wins() {
+        let first = PathBuf::from("/home/user/a");
+        let second = PathBuf::from("/home/user/b");
+        let last = PathBuf::from("/home/user/c");
+
+        // 最終的に `last` へ移動した状態を作る
+        let state = AppState {
+            current_dir: last.clone(),
+            ..AppState::default()
+        };
+
+        // 最後のパスだけ true
+        assert!(state.should_apply(&last));
+        // 途中のパスはすべて false（古い結果として捨てる）
+        assert!(!state.should_apply(&first));
+        assert!(!state.should_apply(&second));
+    }
+
+    /// フィルタが有効（空でない）なときでも、`should_apply` はパス比較のみで判定する。
+    ///
+    /// ガードはフィルタ状態とは無関係——「どこを見ているか」だけが判断基準。
+    /// 監視きっかけの再読み込みではフィルタを引き継いだまま同じディレクトリを再読みするので、
+    /// フィルタが入っていても current_dir が一致すれば `true` でなければならない。
+    #[test]
+    fn should_apply_ignores_filter_state() {
+        let dir = PathBuf::from("/home/user/src");
+
+        // フィルタが有効でも一致すれば true
+        let state_with_filter = AppState {
+            current_dir: dir.clone(),
+            filter: "rs".to_string(),
+            ..AppState::default()
+        };
+        assert!(state_with_filter.should_apply(&dir));
+
+        // フィルタが有効かつパスが違えば false（フィルタは関係なくパスだけで判断）
+        let state_wrong_dir = AppState {
+            current_dir: PathBuf::from("/home/user/other"),
+            filter: "rs".to_string(),
+            ..AppState::default()
+        };
+        assert!(!state_wrong_dir.should_apply(&dir));
     }
 }
