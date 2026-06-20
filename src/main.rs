@@ -112,6 +112,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // I/O は伴わず、保持済みの全エントリ（AppState.entries）から一致分だけを
     // UI スレッドで再構築してモデルに反映する（体感的に瞬時）。
     // フィルタで表示件数が変わるため、選択はリセットしてズレを防ぐ。
+    // total-count はフィルタ前の全件数を保持するため、ここでは変更しない（set_vec のみ）。
     window.on_filter_changed({
         let weak = window.as_weak();
         let model = model.clone();
@@ -301,17 +302,20 @@ fn apply_listing(
     // エントリを保存し、現在のフィルタを適用した表示行を組み立てる。
     // フィルタが空なら（ユーザー操作直後はここに来る）ワーカーが整形済みの rows を
     // そのまま使う。フィルタ有効時（監視きっかけの再読み込み等）は一致分だけ作り直す。
-    let display_rows = APP.with(|app| {
+    // 合わせて全件数（フィルタ前）を total_count として返し、ステータスバーへ渡す。
+    let (display_rows, total_count) = APP.with(|app| {
         let mut app = app.borrow_mut();
         app.entries = entries;
         if install_watcher {
             app.watcher = watcher;
         }
-        if app.filter.is_empty() {
+        let total = app.entries.len();
+        let rows = if app.filter.is_empty() {
             rows
         } else {
             to_rows_from(app.visible_entries())
-        }
+        };
+        (rows, total)
     });
 
     // モデルだけ差し替える（プロパティ全体の作り直しはしない）。
@@ -323,6 +327,8 @@ fn apply_listing(
         vec_model.set_vec(display_rows);
     }
 
+    // フィルタ前の全件数をステータスバーへ渡す（フィルタ中は "N 件（全 M 件中）" と表示される）。
+    window.set_total_count(total_count as i32);
     window.set_current_path(path.to_string_lossy().as_ref().into());
     // ユーザー操作による移動のときは、アドレスバーの編集テキストを新パスへ合わせ、
     // 新ディレクトリでは選択を一旦解除する。
