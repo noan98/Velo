@@ -1,8 +1,70 @@
-import { ListView, Button, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { ListView, Button, HorizontalBox, VerticalBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme, Typography } from "theme.slint";
 
 // Rust 側からダーク/ライトを切り替えられるよう、グローバルを公開 API として再エクスポートする。
-export { Theme }
+export { Theme, Typography }
+
+// パス階層をクリック可能なセグメント列で表示するブレッドクラムバー。
+// 各セグメントをクリックするとその階層へ移動するためのコールバックを発火する。
+// セグメントが多い場合は横スクロール可能で、最後のセグメントが右端に来るよう設計する。
+component BreadcrumbBar inherits Rectangle {
+    in property <[string]> segments;
+    callback segment-clicked(int);
+
+    height: 28px;
+    background: Theme.surface;
+    border-radius: 4px;
+    clip: true;
+
+    // セグメントをフラットな HorizontalLayout に並べる。
+    // ScrollView は水平スクロール対応だが Slint の標準 ScrollView はタッチ/マウスホイール方向に
+    // 依存するため、ここでは単純なレイアウトクリップで省スペース対応にする。
+    HorizontalLayout {
+        alignment: start;
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 0px;
+
+        for seg[i] in root.segments: HorizontalLayout {
+            spacing: 0px;
+            alignment: center;
+
+            // セグメント名（クリック可能）。
+            seg-touch := TouchArea {
+                mouse-cursor: pointer;
+                // クロージャが i を捕捉するため、各反復でコピーが作られる。
+                clicked => { root.segment-clicked(i); }
+
+                Rectangle {
+                    border-radius: 3px;
+                    background: seg-touch.has-hover ? Theme.hover : transparent;
+                    animate background { duration: 80ms; easing: ease-out; }
+
+                    HorizontalLayout {
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        Text {
+                            text: seg;
+                            color: i == root.segments.length - 1 ? Theme.on-surface : Theme.on-surface-variant;
+                            font-weight: i == root.segments.length - 1 ? 600 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // セグメント間の区切り文字 "›"（最後のセグメントの後には付けない）。
+            if i < root.segments.length - 1: Text {
+                text: " › ";
+                color: Theme.on-surface-variant;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
 
 // 一覧の 1 行ぶんの「表示用」データ。
 // 整形済みの文字列だけを持ち、パス等の真実の源は Rust 側に置く（表示専用）。
@@ -16,38 +78,68 @@ export struct FileRow {
     is-dir: bool,
 }
 
-// 列ヘッダ 1 セル。クリックでその列のソートを切り替える。
-// 現在ソート中の列には昇順/降順の方向インジケータ（▲/▼）を表示する。
-component SortHeader inherits Rectangle {
+// 列ヘッダ 1 セル（モダンスタイリング版 #42）。
+// * ホバー時に surface-variant から微妙に明るくして操作感を出す（60ms アニメ）。
+// * 右端に sort-indicator プロパティ（"" / "▲" / "▼"）の表示領域を確保する。
+//   ソート機能自体は将来の Issue で追加予定。既存のソートコールバックとも共存できるよう、
+//   プロパティ名は sort-indicator で固定している。
+// * 左端に 1px の縦区切り線（divider 色）を表示する（最初のセルは show-left-border で制御）。
+component HeaderCell inherits Rectangle {
     in property <string> label;
     in property <int> column;          // この列の識別子（0=名前, 1=サイズ, 2=更新日時）。
     in property <int> active-column;   // いま実際にソートされている列。
     in property <bool> ascending;      // 昇順なら true。
     in property <bool> align-right;    // サイズ列のように右寄せしたいとき true。
+    // 列の左端に縦区切り線を表示するか（先頭セルでは不要なので false にする）。
+    in property <bool> show-left-border: true;
+    // ソートインジケーター領域の受け皿。ソート機能実装前は "" で非表示、
+    // 将来は active-column と ascending から自動計算して渡す。
+    in property <string> sort-indicator: active-column == column ? (ascending ? "▲" : "▼") : "";
     callback sort(int);
 
-    TouchArea {
+    // ホバー中は surface-variant より少し明るくして操作感を示す。
+    // ホバーでない通常状態は surface-variant（ヘッダ背景として親から継承）。
+    background: hover-area.has-hover ? Theme.hover : Theme.surface-variant;
+    animate background {
+        duration: 60ms;
+        easing: ease-out;
+    }
+
+    hover-area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.sort(root.column); }
     }
 
     HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
         spacing: 4px;
         // 右寄せ列では中身を末尾側に寄せる（データ行の右寄せと見た目を合わせる）。
         alignment: root.align-right ? end : start;
         Text {
             text: root.label;
-            font-weight: 700;
+            // ヘッダは bold ウェイト・header-size で列名を強調する。
+            font-weight: Typography.bold;
+            font-size: Typography.header-size;
             color: Theme.on-surface;
             vertical-alignment: center;
         }
-        // ソート中の列にだけ方向インジケータを出す（それ以外は空文字で非表示）。
+        // ソートインジケーター表示領域。空文字のときは幅 0 に縮む。
         Text {
-            text: root.active-column == root.column ? (root.ascending ? "▲" : "▼") : "";
+            text: root.sort-indicator;
             color: Theme.accent;
             font-size: 11px;
             vertical-alignment: center;
         }
+    }
+
+    // 左端 1px 縦区切り線（先頭セルは show-left-border: false で非表示）。
+    if root.show-left-border: Rectangle {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: parent.height;
+        background: Theme.divider;
     }
 }
 
@@ -85,6 +177,7 @@ component FileRowItem inherits Rectangle {
         Text {
             text: root.data.type-label;
             width: 48px;
+            font-size: Typography.body-size;
             vertical-alignment: center;
         }
         Text {
@@ -93,6 +186,10 @@ component FileRowItem inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             color: Theme.on-surface;
+            // UI フォント（可変幅）を使用。フォルダ行は medium ウェイトで軽くボールド。
+            font-family: Typography.ui-font;
+            font-size: Typography.body-size;
+            font-weight: root.data.is-dir ? Typography.medium : Typography.regular;
         }
         Text {
             text: root.data.size;
@@ -100,12 +197,18 @@ component FileRowItem inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             color: Theme.on-surface-variant;
+            // サイズ列はモノスペースフォントで桁を縦に揃える。
+            font-family: Typography.mono-font;
+            font-size: Typography.body-size;
         }
         Text {
             text: root.data.modified;
             width: 150px;
             vertical-alignment: center;
             color: Theme.on-surface-variant;
+            // 更新日時列もモノスペースフォントで桁揃えする。
+            font-family: Typography.mono-font;
+            font-size: Typography.body-size;
         }
     }
 }
@@ -130,13 +233,21 @@ export component MainWindow inherits Window {
     in-out property <bool> address-error;
     // 検索バーの絞り込み文字列（双方向）。移動時に Rust 側が空へ戻す。
     in-out property <string> filter-text;
-    // エラー文言（空文字ならステータスバーは出さない）。
+    // エラー文言（空文字なら通常情報を表示）。
     in property <string> error-message;
+    // フィルタ前の全件数（フィルタ有効時に「全 N 件中」を表示するために使う）。
+    in property <int> total-count;
     // 現在のソート列と方向（ヘッダの方向インジケータ表示に使う）。
     in property <int> sort-column;
     in property <bool> sort-ascending;
     // 選択中の行（-1 は未選択）。キーボード/クリックで更新される表示状態。
     in-out property <int> selected-index: -1;
+    // #29: 戻る / 進む履歴の有無。false のときはボタンを無効化する。
+    in property <bool> can-go-back: false;
+    in property <bool> can-go-forward: false;
+    // ブレッドクラム表示用のパスセグメント列。Rust 側が current-path から生成して流し込む。
+    // 先頭は "C:" のようなドライブ/ルート、以降は各フォルダ名。
+    in property <[string]> path-segments;
 
     // ---- UI からの操作を Rust へ伝えるコールバック ----
     // 引数は rows 内のインデックス。実際のパス解決は Rust 側で行う。
@@ -144,6 +255,9 @@ export component MainWindow inherits Window {
     // Enter での実行（選択中フォルダに入る）。row-double-clicked と同じ意味。
     callback row-activated(int);
     callback go-up();
+    // #29: ナビゲーション履歴の戻る / 進む。
+    callback go-back();
+    callback go-forward();
     // アドレスバーで Enter が押されたとき、入力文字列を渡してパス解決を依頼する。
     callback path-submitted(string);
     // 検索バーの入力が変わるたびに、現在の絞り込み文字列を渡す。
@@ -152,6 +266,13 @@ export component MainWindow inherits Window {
     callback sort-changed(int);
     // ダーク/ライトの手動切替。
     callback toggle-theme();
+    // タイプアヘッド: 印字可能文字が入力されたとき Rust 側に渡す。
+    // 第 2 引数は現在の selected-index（未選択なら -1）。次候補への循環に使う。
+    // Rust 側で前方一致インデックスを返す。戻り値 -1 は「一致なし」を意味する。
+    callback typeahead(string, int) -> int;
+    // ブレッドクラムのセグメントがクリックされたとき、インデックスを Rust に通知する。
+    // Rust 側は先頭から i+1 個のセグメントを結合してパスを構築し navigate_to へ渡す。
+    callback segment-clicked(int);
 
     // 選択を delta 行ぶん動かす（範囲内にクランプ）。空リストでは何もしない。
     function move-selection(delta: int) {
@@ -173,6 +294,7 @@ export component MainWindow inherits Window {
         // キーボードナビゲーション: 矢印で選択移動 / Enter で実行 / Backspace で親へ。
         // #24: Home/End/PageUp/PageDown も処理する。
         // #22: Ctrl+L でアドレスバーにフォーカスを移す。
+        // #29: Alt+Left で戻る / Alt+Right で進む。
         // （アドレスバー/検索バーにフォーカスがあるときは、その入力欄がキーを消費する。）
         key-pressed(event) => {
             if (event.text == Key.UpArrow) {
@@ -223,6 +345,51 @@ export component MainWindow inherits Window {
                 addressbar.select-all();
                 return accept;
             }
+            // #29: Alt+Left → 直前のディレクトリへ戻る。
+            if (event.modifiers.alt && event.text == Key.LeftArrow) {
+                root.go-back();
+                return accept;
+            }
+            // #29: Alt+Right → 戻った後のディレクトリへ進む。
+            if (event.modifiers.alt && event.text == Key.RightArrow) {
+                root.go-forward();
+                return accept;
+            }
+            // #38: `/` キー → フィルタバーにフォーカスを移す。
+            // 入力欄が空になるよう事前にクリアしてから `select-all` で既存テキストを選択状態にする。
+            // こうすることで、すでにフィルタが入っている状態でも即座に上書きできる。
+            if (event.text == "/") {
+                filterbar.focus();
+                filterbar.select-all();
+                return accept;
+            }
+            // #50: タイプアヘッド選択。
+            // 印字可能な 1 文字（修飾キー無し）を Rust 側に渡し、前方一致インデックスを受け取る。
+            // 条件:
+            //   - 修飾キー（Ctrl / Alt）が押されていない（Shift は大文字入力に必要なので許可）
+            //   - event.text がちょうど 1 文字（マルチバイト含む Unicode スカラー値 1 個）
+            //   - 制御文字でない（スペース " " 以上）
+            // これにより矢印・Enter・Backspace・Home/End/PageUp/Down 等の既存キーとは衝突しない
+            // （それらは上の if 節で先に処理され、ここには到達しない）。
+            if (!event.modifiers.control && !event.modifiers.alt
+                    && event.text.character-count == 1
+                    && event.text >= " ") {
+                // 現在の選択インデックスを一緒に渡す（次候補への循環に使う）。
+                let result = root.typeahead(event.text, root.selected-index);
+                if (result >= 0) {
+                    root.selected-index = result;
+                    // 選択行が見えるようにスクロールする。
+                    // 行高さ 26px 固定なので、選択行が中央付近に来る viewport-y を計算する。
+                    // viewport-y は上端を基準にした負のオフセット（上へスクロールするほど小さい）。
+                    // max 値 = 全体高さ - ビュー高さ（0 以上に保つ）。
+                    listview.viewport-y = -Math.clamp(
+                        result * 26px - listview.height / 2 + 13px,
+                        0px,
+                        Math.max(0px, root.rows.length * 26px - listview.height)
+                    );
+                    return accept;
+                }
+            }
             return reject;
         }
 
@@ -230,43 +397,94 @@ export component MainWindow inherits Window {
             padding: 6px;
             spacing: 6px;
 
-            // ツールバー：上へボタン + 編集可能アドレスバー + 検索バー + 読み込み表示 + テーマ切替
+            // ツールバー：戻る/進む/上へボタン + ブレッドクラムバー（+ Ctrl+L で編集アドレスバー）+ 検索バー + 読み込み表示 + テーマ切替
             HorizontalBox {
                 vertical-stretch: 0;
                 spacing: 8px;
+                // #29: 戻る（Alt+Left）。履歴が空のときは無効化して誤操作を防ぐ。
+                Button {
+                    text: "← 戻る";
+                    enabled: root.can-go-back;
+                    clicked => { root.go-back(); }
+                }
+                // #29: 進む（Alt+Right）。履歴が空のときは無効化して誤操作を防ぐ。
+                Button {
+                    text: "→ 進む";
+                    enabled: root.can-go-forward;
+                    clicked => { root.go-forward(); }
+                }
                 Button {
                     text: "↑ 上へ";
                     clicked => { root.go-up(); }
                 }
-                // アドレスバー（編集可能）。Enter で入力パスへジャンプを依頼する。
-                // エラー時は赤枠で縁取り、フォーカスを失ったら現在パスへ戻す（編集キャンセル）。
-                Rectangle {
+                // ブレッドクラムバー: パス階層をセグメントで表示しクリックで移動する（#49）。
+                // Ctrl+L でアドレスバーが開いているときはその下に重ならないよう、
+                // ブレッドクラムとアドレスバーを vertical に積み、
+                // アドレスバーのフォーカスで入れ替える方式をとる。
+                // ここでは「ブレッドクラム+アドレスバーを vertical に積んだ領域」を 1 列に確保する。
+                VerticalLayout {
                     horizontal-stretch: 1;
-                    border-width: root.address-error ? 1px : 0px;
-                    border-color: Theme.error;
-                    border-radius: 4px;
-                    // #22: Ctrl+L でフォーカスを受け取れるよう addressbar という名前を付ける。
-                    addressbar := LineEdit {
-                        width: parent.width;
-                        placeholder-text: "パスを入力して Enter";
-                        text <=> root.address-bar-text;
-                        accepted(text) => { root.path-submitted(text); }
-                        // フォーカス喪失＝編集キャンセル: 現在パスへ戻し、エラー表示も消す。
-                        changed has-focus => {
-                            if (!self.has-focus) {
-                                root.address-bar-text = root.current-path;
-                                root.address-error = false;
+                    spacing: 2px;
+
+                    // ブレッドクラムバー（常時表示）。
+                    BreadcrumbBar {
+                        horizontal-stretch: 1;
+                        segments: root.path-segments;
+                        segment-clicked(i) => { root.segment-clicked(i); }
+                    }
+
+                    // アドレスバー（編集可能）。Enter で入力パスへジャンプを依頼する。
+                    // エラー時は赤枠で縁取り、フォーカスを失ったら現在パスへ戻す（編集キャンセル）。
+                    // Ctrl+L でフォーカスを受け取る（#22）。ブレッドクラムと共存する（#49）。
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        border-width: root.address-error ? 1px : 0px;
+                        border-color: Theme.error;
+                        border-radius: 4px;
+                        // #22: Ctrl+L でフォーカスを受け取れるよう addressbar という名前を付ける。
+                        addressbar := LineEdit {
+                            width: parent.width;
+                            placeholder-text: "Ctrl+L でパスを直接入力（Enter で確定）";
+                            text <=> root.address-bar-text;
+                            accepted(text) => { root.path-submitted(text); }
+                            // フォーカス喪失＝編集キャンセル: 現在パスへ戻し、エラー表示も消す。
+                            changed has-focus => {
+                                if (!self.has-focus) {
+                                    root.address-bar-text = root.current-path;
+                                    root.address-error = false;
+                                }
                             }
                         }
                     }
                 }
 
                 // 検索バー: 入力のたびに現在ディレクトリ内をインクリメンタルに絞り込む。
-                LineEdit {
+                // `/ ` キー（FocusScope の key-pressed）でフォーカスが移動してくる。
+                // Escape でフィルタをクリアしてリスト側にフォーカスを戻す。
+                // Enter（フィルタ有効時）で先頭の一致行を選択する。
+                filterbar := LineEdit {
                     width: 220px;
-                    placeholder-text: "🔍 フィルター...";
+                    placeholder-text: "🔍 フィルター（/ で起動）";
                     text <=> root.filter-text;
                     edited(text) => { root.filter-changed(text); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            // フィルタをクリアして元の全件表示に戻す。
+                            root.filter-text = "";
+                            root.filter-changed("");
+                            scope.focus();
+                            return accept;
+                        }
+                        if (event.text == Key.Return) {
+                            // 絞り込み結果が 1 件以上あれば先頭行を選択してリストにフォーカスを移す。
+                            if (root.rows.length > 0) {
+                                root.selected-index = 0;
+                                scope.focus();
+                            }
+                            return accept;
+                        }
+                        return reject;
+                    }
                 }
 
                 if root.loading: Text {
@@ -281,38 +499,58 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ヘッダ行（固定）。各列クリックでソート切替。列幅はデータ行と揃える。
-            HorizontalBox {
+            // ヘッダ行（固定）。#42: surface-variant 背景 + ボトムボーダー + 列間区切り線。
+            // 列幅はデータ行（FileRowItem）の HorizontalBox と揃える。
+            Rectangle {
                 vertical-stretch: 0;
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 8px;
-                // 種別列はソート対象外（固定ラベル）。
-                Text { text: "種別"; width: 48px; font-weight: 700; color: Theme.on-surface; }
-                SortHeader {
-                    label: "名前";
-                    column: 0;
-                    horizontal-stretch: 1;
-                    active-column: root.sort-column;
-                    ascending: root.sort-ascending;
-                    sort(c) => { root.sort-changed(c); }
+                height: 30px;
+                background: Theme.surface-variant;
+
+                // ヘッダ下端の 1px ボトムボーダー（一覧との境界）。
+                Rectangle {
+                    x: 0;
+                    y: parent.height - 1px;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.divider;
                 }
-                SortHeader {
-                    label: "サイズ";
-                    column: 1;
-                    width: 110px;
-                    align-right: true;
-                    active-column: root.sort-column;
-                    ascending: root.sort-ascending;
-                    sort(c) => { root.sort-changed(c); }
-                }
-                SortHeader {
-                    label: "更新日時";
-                    column: 2;
-                    width: 150px;
-                    active-column: root.sort-column;
-                    ascending: root.sort-ascending;
-                    sort(c) => { root.sort-changed(c); }
+
+                HorizontalLayout {
+                    // 種別列（ソート対象外・固定ラベル）。左端なので show-left-border: false。
+                    HeaderCell {
+                        label: "種別";
+                        column: -1;
+                        width: 48px + 8px + 8px; // padding-left(8) + 48px + spacing は HorizontalLayout が吸収
+                        show-left-border: false;
+                        active-column: -1;
+                        ascending: false;
+                        sort(c) => { }
+                    }
+                    HeaderCell {
+                        label: "名前";
+                        column: 0;
+                        horizontal-stretch: 1;
+                        active-column: root.sort-column;
+                        ascending: root.sort-ascending;
+                        sort(c) => { root.sort-changed(c); }
+                    }
+                    HeaderCell {
+                        label: "サイズ";
+                        column: 1;
+                        width: 110px;
+                        align-right: true;
+                        active-column: root.sort-column;
+                        ascending: root.sort-ascending;
+                        sort(c) => { root.sort-changed(c); }
+                    }
+                    HeaderCell {
+                        label: "更新日時";
+                        column: 2;
+                        width: 150px;
+                        active-column: root.sort-column;
+                        ascending: root.sort-ascending;
+                        sort(c) => { root.sort-changed(c); }
+                    }
                 }
             }
 
@@ -333,18 +571,30 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ステータスバー（エラー時のみ表示）。サイレント失敗を防ぐ。
-            if root.error-message != "": Rectangle {
+            // ステータスバー（常時表示）。
+            // エラー時は赤背景でエラー文言を出す。通常時はアイテム数・選択情報を表示する。
+            Rectangle {
                 vertical-stretch: 0;
                 height: 26px;
-                background: Theme.error.with-alpha(0.15);
+                // エラーがあるときだけ赤背景。通常時は透明。
+                background: root.error-message != "" ? Theme.error.with-alpha(0.15) : transparent;
                 border-radius: 4px;
                 HorizontalBox {
                     padding-left: 8px;
                     padding-right: 8px;
                     Text {
-                        text: "⚠ " + root.error-message;
-                        color: Theme.error;
+                        // エラーあり → 警告アイコン付きエラー文言を優先する。
+                        // なし・フィルタ中 → "3 件（全 25 件中）"、フィルタなし → "25 件"。
+                        // 選択中（selected-index >= 0）なら末尾に " | "foo.txt" を選択中" を付ける。
+                        text: root.error-message != ""
+                            ? "⚠ " + root.error-message
+                            : (root.rows.length != root.total-count
+                                ? root.rows.length + " 件（全 " + root.total-count + " 件中）"
+                                : root.rows.length + " 件")
+                            + (root.selected-index >= 0 && root.selected-index < root.rows.length
+                                ? " | \u{201C}" + root.rows[root.selected-index].name + "\u{201D} を選択中"
+                                : "");
+                        color: root.error-message != "" ? Theme.error : Theme.on-surface-variant;
                         vertical-alignment: center;
                         overflow: elide;
                     }

@@ -181,6 +181,68 @@ mod tests {
         assert_eq!(names, ["small", "medium", "big"]);
     }
 
+    /// サイズ列の降順ソート。昇順の逆順になることを守るテスト。
+    #[test]
+    fn list_dir_sorts_files_by_size_descending() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("big"), vec![0u8; 300]).unwrap();
+        fs::write(dir.path().join("small"), vec![0u8; 10]).unwrap();
+        fs::write(dir.path().join("medium"), vec![0u8; 100]).unwrap();
+
+        let entries = list_dir(dir.path(), SortColumn::Size, false).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+        // 降順では大きいものが先。フォルダがなければファイルだけで逆順になる。
+        assert_eq!(names, ["big", "medium", "small"]);
+    }
+
+    /// 更新日時列の昇順ソート（古い順）。フォルダが先頭固定のうえ、
+    /// ファイル部分は mtime が古いものほど前に来ることを守るテスト。
+    ///
+    /// Unix の `touch -d` でファイルの mtime を任意の過去時刻に設定することで、
+    /// sleep を使わずに確実に異なる mtime を持つファイルを用意する。
+    /// （Windows は `touch` が使えないため、このテストは Unix 専用にしている。）
+    #[cfg(unix)]
+    #[test]
+    fn list_dir_sorts_files_by_modified_ascending() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // ファイルを先に作っておいてから、touch -d で mtime を書き換える。
+        // 「oldest < middle < newest」という順序にする。
+        fs::write(dir.path().join("oldest"), b"a").unwrap();
+        fs::write(dir.path().join("middle"), b"b").unwrap();
+        fs::write(dir.path().join("newest"), b"c").unwrap();
+
+        let oldest_path = dir.path().join("oldest").to_str().unwrap().to_string();
+        let middle_path = dir.path().join("middle").to_str().unwrap().to_string();
+        let newest_path = dir.path().join("newest").to_str().unwrap().to_string();
+
+        // status().unwrap() はプロセス起動の IO エラーしか検知しないため、
+        // touch 自体の終了コードも success() で確認する。失敗すると mtime が設定されず、
+        // 作成順がたまたま期待順と一致したときに偽陽性になるのを防ぐ。
+        let oldest_status = std::process::Command::new("touch")
+            .args(["-d", "2020-01-01 00:00:00", &oldest_path])
+            .status()
+            .unwrap();
+        assert!(oldest_status.success(), "touch 実行に失敗: oldest");
+        let middle_status = std::process::Command::new("touch")
+            .args(["-d", "2021-06-15 12:00:00", &middle_path])
+            .status()
+            .unwrap();
+        assert!(middle_status.success(), "touch 実行に失敗: middle");
+        let newest_status = std::process::Command::new("touch")
+            .args(["-d", "2023-12-31 23:59:59", &newest_path])
+            .status()
+            .unwrap();
+        assert!(newest_status.success(), "touch 実行に失敗: newest");
+
+        // Modified 昇順 = 古い順。
+        let entries = list_dir(dir.path(), SortColumn::Modified, true).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+        assert_eq!(names, ["oldest", "middle", "newest"]);
+    }
+
     /// `FileEntry` に生のメタデータ（種別・サイズ・絶対パス・更新時刻）が入る。
     #[test]
     fn list_dir_populates_entry_metadata() {

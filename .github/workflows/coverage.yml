@@ -1,0 +1,93 @@
+name: カバレッジ計測
+
+# プルリクエストのたびにテストカバレッジを計測し、ジョブサマリーに結果を表示する。
+# cargo-tarpaulin は Linux 専用ツールのため、ci.yml（windows-latest）とは別ワークフローにする。
+# カバレッジ大幅低下は警告扱いとし、PR をブロックはしない。
+on:
+  pull_request:
+
+# 同一 PR で複数回 push されたとき、古い計測ジョブを打ち切って最新だけ走らせる。
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: テストカバレッジ計測（cargo-tarpaulin）
+    # tarpaulin は Linux カーネルの ptrace に依存するため ubuntu-latest を使う。
+    # Windows ターゲットのコードだが、ロジック層（fs/entry.rs・lister.rs など）の
+    # ユニットテストは Linux でも問題なく動く。
+    runs-on: ubuntu-latest
+    steps:
+      # Action はバージョンタグで参照する（既存 ci.yml と統一）。
+      # このワークフローは認証情報を必要としないため persist-credentials は無効化する。
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Slint は Linux でビルドするとき fontconfig 等のシステムライブラリを必要とする
+      # （ターゲットは Windows だが、tarpaulin 計測のため Linux 上でビルド・テストするため）。
+      # これらが無いと yeslogic-fontconfig-sys のビルドが pkg-config で失敗する。
+      - name: Slint の Linux ビルド依存をインストール
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig1-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev
+
+      - name: Rust ツールチェーンのセットアップ
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: キャッシュ（cargo レジストリ・ビルドキャッシュ）
+        uses: Swatinem/rust-cache@v2
+
+      # tarpaulin のインストール。--locked で再現性を担保する。
+      # CI 毎のインストール時間は rust-cache で軽減される。
+      - name: cargo-tarpaulin のインストール
+        run: cargo install cargo-tarpaulin --locked
+
+      # カバレッジ計測本体。
+      # --engine llvm: ptrace より高精度かつ非同期コードとの相性が良い LLVM ベースの計測。
+      # --out Xml: irongut/CodeCoverageSummary が読み込む Cobertura 形式で出力。
+      # --exclude-files "build.rs": ビルドスクリプトは計測対象外。
+      # --exclude-files "ui/*": Slint がコード生成するファイルは計測対象外。
+      # --skip-clean: キャッシュを活かしてビルドを速くする。
+      - name: カバレッジ計測
+        run: |
+          cargo tarpaulin \
+            --engine llvm \
+            --out Xml \
+            --output-dir coverage \
+            --exclude-files "build.rs" \
+            --exclude-files "ui/*" \
+            --skip-clean \
+            --timeout 120
+
+      # Cobertura XML からカバレッジ率のサマリーを生成してジョブサマリーに書き出す。
+      # thresholds は参考値として設定する（失敗扱いにしない）。
+      - name: カバレッジサマリーをジョブサマリーに出力
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: coverage/cobertura.xml
+          badge: false
+          format: markdown
+          # カバレッジ大幅低下は警告にとどめ、PR をブロックしない。
+          fail_below_min: false
+          thresholds: "30 60"
+          output: both
+
+      # CodeCoverageSummary の markdown 出力を GitHub のジョブサマリーに追記する。
+      - name: ジョブサマリーへの書き出し
+        if: always()
+        run: |
+          if [ -f code-coverage-results.md ]; then
+            echo "## テストカバレッジ計測結果" >> "$GITHUB_STEP_SUMMARY"
+            cat code-coverage-results.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## テストカバレッジ計測結果" >> "$GITHUB_STEP_SUMMARY"
+            echo "カバレッジレポートファイルが見つかりませんでした。" >> "$GITHUB_STEP_SUMMARY"
+          fi

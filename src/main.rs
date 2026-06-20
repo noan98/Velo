@@ -67,6 +67,18 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // 「戻る」: 直前のディレクトリへ戻る（戻る履歴がなければ何もしない）。
+    window.on_go_back({
+        let weak = window.as_weak();
+        move || navigate_back(weak.clone())
+    });
+
+    // 「進む」: 戻った後にひとつ進む（進む履歴がなければ何もしない）。
+    window.on_go_forward({
+        let weak = window.as_weak();
+        move || navigate_forward(weak.clone())
+    });
+
     // アドレスバーに入力されたパスへ直接ジャンプする（Enter で確定）。
     // ディレクトリならそこへ、ファイルなら親ディレクトリへ移動。相対パスは
     // 現在ディレクトリ基準で解決し、存在しなければエラー表示を出す。
@@ -112,6 +124,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // I/O は伴わず、保持済みの全エントリ（AppState.entries）から一致分だけを
     // UI スレッドで再構築してモデルに反映する（体感的に瞬時）。
     // フィルタで表示件数が変わるため、選択はリセットしてズレを防ぐ。
+    // total-count はフィルタ前の全件数を保持するため、ここでは変更しない（set_vec のみ）。
     window.on_filter_changed({
         let weak = window.as_weak();
         let model = model.clone();
@@ -152,6 +165,41 @@ fn main() -> Result<(), slint::PlatformError> {
                 window.set_selected_index(-1);
                 let path = APP.with(|app| app.borrow().current_dir.clone());
                 load_dir(window.as_weak(), path, false);
+            }
+        }
+    });
+
+    // #50: タイプアヘッド選択。印字可能 1 文字と現在の選択インデックスを受け取り、
+    // 前方一致エントリの表示インデックスを返す。一致なしのときは -1 を返す。
+    // Slint 側で selected-index の更新とスクロール位置の調整を行うので、
+    // ここでは AppState.typeahead_match の結果をそのまま返すだけでよい。
+    window.on_typeahead({
+        move |ch, current_selected| {
+            APP.with(|app| {
+                let mut app = app.borrow_mut();
+                match app.typeahead_match(&ch, current_selected) {
+                    Some(idx) => idx as i32,
+                    None => -1,
+                }
+            })
+        }
+    });
+
+    // ブレッドクラムのセグメントがクリックされたとき、その階層のパスへ移動する（#49）。
+    // セグメントリストの先頭から i+1 個を結合してパスを構築し、navigate_to へ渡す。
+    // Windows のドライブ表記（"C:" 等）と残りのコンポーネントを PathBuf で組み立てる。
+    window.on_segment_clicked({
+        let weak = window.as_weak();
+        move |index| {
+            // セグメント文字列を APP から取得するのではなく、現在の current_dir を
+            // Path::components() で分解して先頭 index+1 個を結合する。
+            // こうすると Slint 側の文字列と Rust 側のパス表現がずれるリスクを避けられる。
+            let path = APP.with(|app| {
+                let app = app.borrow();
+                build_path_from_components(&app.current_dir, index as usize)
+            });
+            if let Some(p) = path {
+                navigate_to(weak.clone(), p);
             }
         }
     });
@@ -215,13 +263,23 @@ fn activate_row(weak: Weak<MainWindow>, index: i32) {
 
 /// 別ディレクトリへ移動する（ユーザー操作の入口）。
 ///
-/// `current_dir` を即座に更新し（最後に要求された移動が勝つようにするため）、
+/// 現在ディレクトリを戻る履歴に積み、進む履歴をクリアしてから `current_dir` を更新する。
 /// 監視ウォッチャの張り直しも行う。実体の読み込みは `load_dir` がワーカーで行う。
+///
+/// 「戻る/進む」経由の移動は別関数（`navigate_back`/`navigate_forward`）を使い、
+/// この関数を通らないことでスタック操作のループを防ぐ。
 fn navigate_to(weak: Weak<MainWindow>, path: PathBuf) {
     // current_dir は UI スレッドでだけ更新する。ここはコールバック内なので UI スレッド。
     // 別ディレクトリへ移ったらフィルタは引き継がず解除する（新しい場所の全件を見せる）。
     APP.with(|app| {
         let mut app = app.borrow_mut();
+        // 現在地を戻る履歴に積む（空パス＝起動直後は積まない）。
+        // 同一ディレクトリへの再移動（アドレスバー再入力・末尾セグメントのクリック等）では
+        // 履歴に重複を積まないよう、移動先と現在地が異なるときだけ積む。
+        let prev = app.current_dir.clone();
+        if prev != PathBuf::new() && prev != path {
+            app.push_history(prev);
+        }
         app.current_dir = path.clone();
         app.filter.clear();
     });
@@ -230,9 +288,76 @@ fn navigate_to(weak: Weak<MainWindow>, path: PathBuf) {
     if let Some(window) = weak.upgrade() {
         window.set_filter_text(SharedString::new());
         window.set_address_error(false);
+        update_history_buttons(&window);
     }
 
     load_dir(weak, path, true);
+}
+
+/// 「戻る」操作専用の移動関数。
+///
+/// `navigate_to` は呼ばず（履歴を通常ナビゲーションとして積まないよう）、
+/// `AppState::pop_back` でスタック操作だけ行ってから `load_dir` を呼ぶ。
+fn navigate_back(weak: Weak<MainWindow>) {
+    let dest = APP.with(|app| app.borrow_mut().pop_back());
+    let Some(path) = dest else {
+        return;
+    };
+
+    APP.with(|app| {
+        let mut app = app.borrow_mut();
+        app.current_dir = path.clone();
+        app.filter.clear();
+    });
+
+    if let Some(window) = weak.upgrade() {
+        window.set_filter_text(SharedString::new());
+        window.set_address_error(false);
+        update_history_buttons(&window);
+    }
+
+    load_dir(weak, path, true);
+}
+
+/// 「進む」操作専用の移動関数。
+///
+/// `navigate_to` は呼ばず（履歴を通常ナビゲーションとして積まないよう）、
+/// `AppState::pop_forward` でスタック操作だけ行ってから `load_dir` を呼ぶ。
+fn navigate_forward(weak: Weak<MainWindow>) {
+    let dest = APP.with(|app| app.borrow_mut().pop_forward());
+    let Some(path) = dest else {
+        return;
+    };
+
+    APP.with(|app| {
+        let mut app = app.borrow_mut();
+        app.current_dir = path.clone();
+        app.filter.clear();
+    });
+
+    if let Some(window) = weak.upgrade() {
+        window.set_filter_text(SharedString::new());
+        window.set_address_error(false);
+        update_history_buttons(&window);
+    }
+
+    load_dir(weak, path, true);
+}
+
+/// 「戻る」「進む」ボタンの `enabled` 状態を現在の履歴スタックに合わせて更新する。
+///
+/// 履歴が空のときはボタンを無効化し、誤操作を防ぐ。
+/// ナビゲーション操作のたびに呼んで UI と状態を同期させる。
+fn update_history_buttons(window: &MainWindow) {
+    let (can_back, can_forward) = APP.with(|app| {
+        let app = app.borrow();
+        (
+            !app.history_back.is_empty(),
+            !app.history_forward.is_empty(),
+        )
+    });
+    window.set_can_go_back(can_back);
+    window.set_can_go_forward(can_forward);
 }
 
 /// `path` の内容をワーカースレッドで読み込み、完了後に UI へ反映する。
@@ -286,8 +411,8 @@ fn apply_listing(
 ) {
     // 「最後に要求された移動が勝つ」ためのガード。
     // 読み込み中に別のディレクトリへ移動されていたら、この古い結果は捨てる。
-    let is_current = APP.with(|app| app.borrow().current_dir == path);
-    if !is_current {
+    // ガードのロジックは AppState::should_apply に集約し、ここでは呼び出すだけにする。
+    if !APP.with(|app| app.borrow().should_apply(&path)) {
         return;
     }
 
@@ -301,17 +426,20 @@ fn apply_listing(
     // エントリを保存し、現在のフィルタを適用した表示行を組み立てる。
     // フィルタが空なら（ユーザー操作直後はここに来る）ワーカーが整形済みの rows を
     // そのまま使う。フィルタ有効時（監視きっかけの再読み込み等）は一致分だけ作り直す。
-    let display_rows = APP.with(|app| {
+    // 合わせて全件数（フィルタ前）を total_count として返し、ステータスバーへ渡す。
+    let (display_rows, total_count) = APP.with(|app| {
         let mut app = app.borrow_mut();
         app.entries = entries;
         if install_watcher {
             app.watcher = watcher;
         }
-        if app.filter.is_empty() {
+        let total = app.entries.len();
+        let rows = if app.filter.is_empty() {
             rows
         } else {
             to_rows_from(app.visible_entries())
-        }
+        };
+        (rows, total)
     });
 
     // モデルだけ差し替える（プロパティ全体の作り直しはしない）。
@@ -323,7 +451,17 @@ fn apply_listing(
         vec_model.set_vec(display_rows);
     }
 
+    // フィルタ前の全件数をステータスバーへ渡す（フィルタ中は "N 件（全 M 件中）" と表示される）。
+    window.set_total_count(total_count as i32);
     window.set_current_path(path.to_string_lossy().as_ref().into());
+
+    // ブレッドクラム用のパスセグメントを生成して Slint へ渡す（#49）。
+    // Path::components() でセグメントに分解し、表示用文字列に変換する。
+    // 例: "C:\Users\user\Documents" → ["C:", "Users", "user", "Documents"]
+    let segments = path_to_segments(&path);
+    let segment_model = std::rc::Rc::new(VecModel::<SharedString>::from(segments));
+    window.set_path_segments(ModelRc::from(segment_model));
+
     // ユーザー操作による移動のときは、アドレスバーの編集テキストを新パスへ合わせ、
     // 新ディレクトリでは選択を一旦解除する。
     // 監視きっかけの再読み込みでは（同じディレクトリなので）どちらも触らず、
@@ -434,6 +572,92 @@ fn icon_for_entry(entry: &FileEntry) -> &'static str {
         Some("exe" | "msi") => "🖥",
         _ => "📄",
     }
+}
+
+/// パスを表示用セグメント列に分解する（ブレッドクラム用、#49）。
+///
+/// `Path::components()` で各部分を取り出し、表示に適した文字列に変換する。
+/// Windows では "C:\" は Prefix + RootDir に分かれるため、ドライブ名（"C:"）だけを
+/// 先頭に置き、以降のコンポーネントはフォルダ名として並べる。
+/// Linux/macOS の絶対パスでは RootDir が "/" になるため先頭は "/" を出す。
+fn path_to_segments(path: &Path) -> Vec<SharedString> {
+    use std::path::Component;
+    let mut segments: Vec<SharedString> = Vec::new();
+    for component in path.components() {
+        match component {
+            // Windows: "C:\" → Prefix は "C:" として先頭へ。RootDir（"\"）は飲み込む。
+            Component::Prefix(prefix) => {
+                let s = prefix.as_os_str().to_string_lossy().into_owned();
+                segments.push(SharedString::from(s));
+            }
+            // RootDir は単独 "/" のみの場合（Unix ルート）に先頭へ追加。
+            // Windows の "\" は Prefix の直後に続くだけなので、Prefix がない場合のみ追加。
+            Component::RootDir => {
+                if segments.is_empty() {
+                    segments.push(SharedString::from("/"));
+                }
+            }
+            Component::Normal(name) => {
+                segments.push(SharedString::from(name.to_string_lossy().as_ref()));
+            }
+            // "." や ".." は normalize 済みとして無視する（PathBuf は通常解決済み）。
+            Component::CurDir | Component::ParentDir => {}
+        }
+    }
+    segments
+}
+
+/// ブレッドクラムのインデックス `i` に対応するパスを構築する（#49）。
+///
+/// `current_dir` を `components()` で分解し、先頭から `i+1` 個を結合して PathBuf を返す。
+/// インデックスが範囲外の場合は `None`。
+fn build_path_from_components(current_dir: &Path, index: usize) -> Option<PathBuf> {
+    use std::path::Component;
+    // コンポーネントを収集（RootDir は Prefix の直後に続くため両方を保持する）。
+    let components: Vec<Component<'_>> = current_dir.components().collect();
+    // RootDir を Prefix にマージした「論理セグメント」列を作る。
+    // Prefix + RootDir の連続は 1 セグメント扱いとし、残りは Normal が 1 セグメント。
+    let mut logical: Vec<Vec<Component<'_>>> = Vec::new();
+    let mut i_comp = 0usize;
+    while i_comp < components.len() {
+        match &components[i_comp] {
+            Component::Prefix(_) => {
+                // Prefix に続く RootDir があれば同じセグメントにまとめる。
+                let mut seg = vec![components[i_comp]];
+                if i_comp + 1 < components.len() {
+                    if let Component::RootDir = &components[i_comp + 1] {
+                        seg.push(components[i_comp + 1]);
+                        i_comp += 1;
+                    }
+                }
+                logical.push(seg);
+            }
+            Component::RootDir => {
+                // Unix ルート "/" は単独セグメント。
+                logical.push(vec![components[i_comp]]);
+            }
+            Component::Normal(_) => {
+                logical.push(vec![components[i_comp]]);
+            }
+            // path_to_segments と同様に "." / ".." はセグメントに数えない。
+            // 両関数で扱いを揃えることで、正規化されていないパスでもセグメント数がずれない。
+            Component::CurDir | Component::ParentDir => {}
+        }
+        i_comp += 1;
+    }
+
+    if index >= logical.len() {
+        return None;
+    }
+
+    // 先頭から index+1 個の論理セグメントを PathBuf に変換する。
+    let mut result = PathBuf::new();
+    for group in &logical[..=index] {
+        for comp in group {
+            result.push(comp);
+        }
+    }
+    Some(result)
 }
 
 /// Slint から渡る列識別子（int）を `SortColumn` に変換する。未知の値は名前列に倒す。
