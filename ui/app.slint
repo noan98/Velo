@@ -1,8 +1,8 @@
 import { ListView, Button, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Theme, Typography } from "theme.slint";
 
 // Rust 側からダーク/ライトを切り替えられるよう、グローバルを公開 API として再エクスポートする。
-export { Theme }
+export { Theme, Typography }
 
 // 一覧の 1 行ぶんの「表示用」データ。
 // 整形済みの文字列だけを持ち、パス等の真実の源は Rust 側に置く（表示専用）。
@@ -56,7 +56,9 @@ component HeaderCell inherits Rectangle {
         alignment: root.align-right ? end : start;
         Text {
             text: root.label;
-            font-weight: 700;
+            // ヘッダは bold ウェイト・header-size で列名を強調する。
+            font-weight: Typography.bold;
+            font-size: Typography.header-size;
             color: Theme.on-surface;
             vertical-alignment: center;
         }
@@ -113,6 +115,7 @@ component FileRowItem inherits Rectangle {
         Text {
             text: root.data.type-label;
             width: 48px;
+            font-size: Typography.body-size;
             vertical-alignment: center;
         }
         Text {
@@ -121,6 +124,10 @@ component FileRowItem inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             color: Theme.on-surface;
+            // UI フォント（可変幅）を使用。フォルダ行は medium ウェイトで軽くボールド。
+            font-family: Typography.ui-font;
+            font-size: Typography.body-size;
+            font-weight: root.data.is-dir ? Typography.medium : Typography.regular;
         }
         Text {
             text: root.data.size;
@@ -128,12 +135,18 @@ component FileRowItem inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             color: Theme.on-surface-variant;
+            // サイズ列はモノスペースフォントで桁を縦に揃える。
+            font-family: Typography.mono-font;
+            font-size: Typography.body-size;
         }
         Text {
             text: root.data.modified;
             width: 150px;
             vertical-alignment: center;
             color: Theme.on-surface-variant;
+            // 更新日時列もモノスペースフォントで桁揃えする。
+            font-family: Typography.mono-font;
+            font-size: Typography.body-size;
         }
     }
 }
