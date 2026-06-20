@@ -139,6 +139,9 @@ export component MainWindow inherits Window {
     in property <bool> sort-ascending;
     // 選択中の行（-1 は未選択）。キーボード/クリックで更新される表示状態。
     in-out property <int> selected-index: -1;
+    // #29: 戻る / 進む履歴の有無。false のときはボタンを無効化する。
+    in property <bool> can-go-back: false;
+    in property <bool> can-go-forward: false;
 
     // ---- UI からの操作を Rust へ伝えるコールバック ----
     // 引数は rows 内のインデックス。実際のパス解決は Rust 側で行う。
@@ -146,6 +149,9 @@ export component MainWindow inherits Window {
     // Enter での実行（選択中フォルダに入る）。row-double-clicked と同じ意味。
     callback row-activated(int);
     callback go-up();
+    // #29: ナビゲーション履歴の戻る / 進む。
+    callback go-back();
+    callback go-forward();
     // アドレスバーで Enter が押されたとき、入力文字列を渡してパス解決を依頼する。
     callback path-submitted(string);
     // 検索バーの入力が変わるたびに、現在の絞り込み文字列を渡す。
@@ -175,6 +181,7 @@ export component MainWindow inherits Window {
         // キーボードナビゲーション: 矢印で選択移動 / Enter で実行 / Backspace で親へ。
         // #24: Home/End/PageUp/PageDown も処理する。
         // #22: Ctrl+L でアドレスバーにフォーカスを移す。
+        // #29: Alt+Left で戻る / Alt+Right で進む。
         // （アドレスバー/検索バーにフォーカスがあるときは、その入力欄がキーを消費する。）
         key-pressed(event) => {
             if (event.text == Key.UpArrow) {
@@ -225,6 +232,16 @@ export component MainWindow inherits Window {
                 addressbar.select-all();
                 return accept;
             }
+            // #29: Alt+Left → 直前のディレクトリへ戻る。
+            if (event.modifiers.alt && event.text == Key.LeftArrow) {
+                root.go-back();
+                return accept;
+            }
+            // #29: Alt+Right → 戻った後のディレクトリへ進む。
+            if (event.modifiers.alt && event.text == Key.RightArrow) {
+                root.go-forward();
+                return accept;
+            }
             return reject;
         }
 
@@ -232,10 +249,22 @@ export component MainWindow inherits Window {
             padding: 6px;
             spacing: 6px;
 
-            // ツールバー：上へボタン + 編集可能アドレスバー + 検索バー + 読み込み表示 + テーマ切替
+            // ツールバー：戻る/進む/上へボタン + 編集可能アドレスバー + 検索バー + 読み込み表示 + テーマ切替
             HorizontalBox {
                 vertical-stretch: 0;
                 spacing: 8px;
+                // #29: 戻る（Alt+Left）。履歴が空のときは無効化して誤操作を防ぐ。
+                Button {
+                    text: "← 戻る";
+                    enabled: root.can-go-back;
+                    clicked => { root.go-back(); }
+                }
+                // #29: 進む（Alt+Right）。履歴が空のときは無効化して誤操作を防ぐ。
+                Button {
+                    text: "→ 進む";
+                    enabled: root.can-go-forward;
+                    clicked => { root.go-forward(); }
+                }
                 Button {
                     text: "↑ 上へ";
                     clicked => { root.go-up(); }
