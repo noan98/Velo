@@ -21,6 +21,10 @@ export global Theme {
     out property <brush> surface: dark-mode ? #313244 : #f3f4f6;
     // 一覧の交互カラー（奇数行）に使う、背景にごく近い面。
     out property <brush> surface-alt: dark-mode ? #262636 : #fafbfc;
+    // ヘッダ行など、surface より少しだけ強調した面（モダンヘッダの背景に使う）。
+    out property <brush> surface-variant: dark-mode ? #2a2a3d : #f0f1f5;
+    // 列間・ヘッダ下などの 1px 区切り線色。
+    out property <brush> divider: dark-mode ? #393952 : #d8dae0;
     // 主たる文字色（背景・surface の上に乗る前景）。
     out property <brush> on-surface: dark-mode ? #cdd6f4 : #1e1e2e;
     // 補助的な文字色（サイズ・日時など控えめに見せたい情報）。
