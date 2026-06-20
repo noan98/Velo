@@ -591,7 +591,7 @@ export component MainWindow inherits Window {
                             : (root.rows.length != root.total-count
                                 ? root.rows.length + " 件（全 " + root.total-count + " 件中）"
                                 : root.rows.length + " 件")
-                            + (root.selected-index >= 0
+                            + (root.selected-index >= 0 && root.selected-index < root.rows.length
                                 ? " | \u{201C}" + root.rows[root.selected-index].name + "\u{201D} を選択中"
                                 : "");
                         color: root.error-message != "" ? Theme.error : Theme.on-surface-variant;

@@ -217,18 +217,24 @@ mod tests {
         let middle_path = dir.path().join("middle").to_str().unwrap().to_string();
         let newest_path = dir.path().join("newest").to_str().unwrap().to_string();
 
-        std::process::Command::new("touch")
+        // status().unwrap() はプロセス起動の IO エラーしか検知しないため、
+        // touch 自体の終了コードも success() で確認する。失敗すると mtime が設定されず、
+        // 作成順がたまたま期待順と一致したときに偽陽性になるのを防ぐ。
+        let oldest_status = std::process::Command::new("touch")
             .args(["-d", "2020-01-01 00:00:00", &oldest_path])
             .status()
             .unwrap();
-        std::process::Command::new("touch")
+        assert!(oldest_status.success(), "touch 実行に失敗: oldest");
+        let middle_status = std::process::Command::new("touch")
             .args(["-d", "2021-06-15 12:00:00", &middle_path])
             .status()
             .unwrap();
-        std::process::Command::new("touch")
+        assert!(middle_status.success(), "touch 実行に失敗: middle");
+        let newest_status = std::process::Command::new("touch")
             .args(["-d", "2023-12-31 23:59:59", &newest_path])
             .status()
             .unwrap();
+        assert!(newest_status.success(), "touch 実行に失敗: newest");
 
         // Modified 昇順 = 古い順。
         let entries = list_dir(dir.path(), SortColumn::Modified, true).unwrap();

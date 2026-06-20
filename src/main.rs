@@ -274,8 +274,10 @@ fn navigate_to(weak: Weak<MainWindow>, path: PathBuf) {
     APP.with(|app| {
         let mut app = app.borrow_mut();
         // 現在地を戻る履歴に積む（空パス＝起動直後は積まない）。
+        // 同一ディレクトリへの再移動（アドレスバー再入力・末尾セグメントのクリック等）では
+        // 履歴に重複を積まないよう、移動先と現在地が異なるときだけ積む。
         let prev = app.current_dir.clone();
-        if prev != PathBuf::new() {
+        if prev != PathBuf::new() && prev != path {
             app.push_history(prev);
         }
         app.current_dir = path.clone();
@@ -634,9 +636,12 @@ fn build_path_from_components(current_dir: &Path, index: usize) -> Option<PathBu
                 // Unix ルート "/" は単独セグメント。
                 logical.push(vec![components[i_comp]]);
             }
-            Component::Normal(_) | Component::CurDir | Component::ParentDir => {
+            Component::Normal(_) => {
                 logical.push(vec![components[i_comp]]);
             }
+            // path_to_segments と同様に "." / ".." はセグメントに数えない。
+            // 両関数で扱いを揃えることで、正規化されていないパスでもセグメント数がずれない。
+            Component::CurDir | Component::ParentDir => {}
         }
         i_comp += 1;
     }
