@@ -156,6 +156,22 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // #50: タイプアヘッド選択。印字可能 1 文字と現在の選択インデックスを受け取り、
+    // 前方一致エントリの表示インデックスを返す。一致なしのときは -1 を返す。
+    // Slint 側で selected-index の更新とスクロール位置の調整を行うので、
+    // ここでは AppState.typeahead_match の結果をそのまま返すだけでよい。
+    window.on_typeahead({
+        move |ch, current_selected| {
+            APP.with(|app| {
+                let mut app = app.borrow_mut();
+                match app.typeahead_match(&ch, current_selected) {
+                    Some(idx) => idx as i32,
+                    None => -1,
+                }
+            })
+        }
+    });
+
     // ダーク/ライトの手動切替。テーマはグローバルとして UI 側に持ち、ここでは反転だけ行う。
     window.on_toggle_theme({
         let weak = window.as_weak();

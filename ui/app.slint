@@ -152,6 +152,10 @@ export component MainWindow inherits Window {
     callback sort-changed(int);
     // ダーク/ライトの手動切替。
     callback toggle-theme();
+    // タイプアヘッド: 印字可能文字が入力されたとき Rust 側に渡す。
+    // 第 2 引数は現在の selected-index（未選択なら -1）。次候補への循環に使う。
+    // Rust 側で前方一致インデックスを返す。戻り値 -1 は「一致なし」を意味する。
+    callback typeahead(string, int) -> int;
 
     // 選択を delta 行ぶん動かす（範囲内にクランプ）。空リストでは何もしない。
     function move-selection(delta: int) {
@@ -222,6 +226,33 @@ export component MainWindow inherits Window {
                 addressbar.focus();
                 addressbar.select-all();
                 return accept;
+            }
+            // #50: タイプアヘッド選択。
+            // 印字可能な 1 文字（修飾キー無し）を Rust 側に渡し、前方一致インデックスを受け取る。
+            // 条件:
+            //   - 修飾キー（Ctrl / Alt）が押されていない（Shift は大文字入力に必要なので許可）
+            //   - event.text がちょうど 1 文字（マルチバイト含む Unicode スカラー値 1 個）
+            //   - 制御文字でない（スペース " " 以上）
+            // これにより矢印・Enter・Backspace・Home/End/PageUp/Down 等の既存キーとは衝突しない
+            // （それらは上の if 節で先に処理され、ここには到達しない）。
+            if (!event.modifiers.control && !event.modifiers.alt
+                    && event.text.character-count == 1
+                    && event.text >= " ") {
+                // 現在の選択インデックスを一緒に渡す（次候補への循環に使う）。
+                let result = root.typeahead(event.text, root.selected-index);
+                if (result >= 0) {
+                    root.selected-index = result;
+                    // 選択行が見えるようにスクロールする。
+                    // 行高さ 26px 固定なので、選択行が中央付近に来る viewport-y を計算する。
+                    // viewport-y は上端を基準にした負のオフセット（上へスクロールするほど小さい）。
+                    // max 値 = 全体高さ - ビュー高さ（0 以上に保つ）。
+                    listview.viewport-y = -Math.clamp(
+                        result * 26px - listview.height / 2 + 13px,
+                        0px,
+                        Math.max(0px, root.rows.length * 26px - listview.height)
+                    );
+                    return accept;
+                }
             }
             return reject;
         }
