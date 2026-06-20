@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::fs::entry::FileEntry;
 use crate::fs::watcher::DirWatcher;
@@ -62,6 +63,11 @@ pub struct AppState {
     /// 「進む」操作で pop して current_dir へ移動する。
     /// 通常ナビゲーション時は全件をクリアする。
     pub history_forward: Vec<PathBuf>,
+    /// タイプアヘッドの入力バッファ。押された文字を蓄積し、前方一致ジャンプに使う。
+    /// 500ms 無入力でリセットされる。
+    pub typeahead_buffer: String,
+    /// 最後にタイプアヘッド文字を受け取った時刻。リセット判定に使う。
+    pub typeahead_last: Instant,
 }
 
 impl Default for AppState {
@@ -77,6 +83,8 @@ impl Default for AppState {
             sort_ascending: true,
             history_back: Vec::new(),
             history_forward: Vec::new(),
+            typeahead_buffer: String::new(),
+            typeahead_last: Instant::now(),
         }
     }
 }
@@ -137,6 +145,76 @@ impl AppState {
     /// フィルタしながら数える。範囲外・不一致なら None。
     pub fn entry_at(&self, index: usize) -> Option<&FileEntry> {
         self.visible_entries().nth(index)
+    }
+
+    /// タイプアヘッド: 印字可能文字 `ch` を受け取り、前方一致するエントリの
+    /// 表示インデックス（フィルタ適用後）を返す。
+    ///
+    /// ## バッファの扱い
+    /// - 最後の入力から 500ms 以上経過していたら、バッファをリセットしてから `ch` を追加する。
+    /// - バッファが `ch` の繰り返しだけ（例: "aaa"）のときは単一文字検索として扱い、
+    ///   現在の選択よりも後ろにある次候補へ進む（ループ可）。
+    ///   こうすると "a" を連打するだけで "a" 始まりのエントリを順に巡れる。
+    ///   ただし 2 文字以上の異なる接頭辞（"ab" など）は通常の前方一致優先とし、
+    ///   先頭候補から検索する（繰り返し検出を抑制してタイプした文字を優先する）。
+    /// - 一致なしのときは `None` を返し、選択・バッファは変更しない。
+    /// - `current_selected` は現在の選択インデックス（未選択なら -1）。次候補巡回に使う。
+    pub fn typeahead_match(&mut self, ch: &str, current_selected: i32) -> Option<usize> {
+        let now = Instant::now();
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+        // 500ms 超過でバッファをリセットし、単純な前方一致に戻す。
+        if now.duration_since(self.typeahead_last) >= TIMEOUT {
+            self.typeahead_buffer.clear();
+        }
+        self.typeahead_last = now;
+        self.typeahead_buffer.push_str(ch);
+
+        let buf_lower = self.typeahead_buffer.to_lowercase();
+        let ch_lower = ch.to_lowercase();
+
+        // バッファが同じ1文字の繰り返しかどうか判定する。
+        // 例: "aaa" → true、"ab" → false、"a" → true（1文字は繰り返しとして扱う）。
+        let is_repeated_single = buf_lower.chars().all(|c| c.to_string() == ch_lower);
+
+        let entries: Vec<_> = self.visible_entries().collect();
+        let total = entries.len();
+        if total == 0 {
+            return None;
+        }
+
+        if is_repeated_single {
+            // 繰り返しモード: 現在選択よりも後ろ（インデックスが大きい）から次候補を探し、
+            // 見つからなければ先頭から巻き返す（ラップアラウンド）。
+            let start = if current_selected >= 0 {
+                (current_selected as usize + 1) % total
+            } else {
+                0
+            };
+            // start から total 件ぶんを循環して探す。
+            let found = (0..total).find(|&offset| {
+                let idx = (start + offset) % total;
+                entries[idx].name.to_lowercase().starts_with(&ch_lower)
+            });
+            if let Some(offset) = found {
+                return Some((start + offset) % total);
+            }
+        } else {
+            // 通常モード: バッファ全体で前方一致する先頭候補を返す。
+            let found = entries
+                .iter()
+                .position(|e| e.name.to_lowercase().starts_with(&buf_lower));
+            if let Some(idx) = found {
+                return Some(idx);
+            }
+        }
+
+        // 一致なし: バッファを巻き戻して None を返す（タイプミスを蓄積しない）。
+        // `ch` ぶん追加した文字を取り除いて、直前の状態に戻す。
+        let ch_len = ch.len();
+        let new_len = self.typeahead_buffer.len().saturating_sub(ch_len);
+        self.typeahead_buffer.truncate(new_len);
+        None
     }
 
     /// 現在のフィルタに一致するエントリだけを、表示順のまま列挙する。
@@ -455,5 +533,50 @@ mod tests {
     fn pop_forward_returns_none_when_empty() {
         let mut state = AppState::default();
         assert!(state.pop_forward().is_none());
+    }
+
+    /// `typeahead_match` が 1 文字で前方一致する先頭エントリを返すことを守るテスト。
+    #[test]
+    fn typeahead_match_finds_first_match() {
+        let mut state = AppState {
+            entries: vec![
+                make_entry("apple.txt", false),
+                make_entry("banana.txt", false),
+                make_entry("apricot.txt", false),
+            ],
+            ..AppState::default()
+        };
+        // 未選択（-1）から "a" → "apple.txt"（インデックス 0）へジャンプする。
+        let idx = state.typeahead_match("a", -1);
+        assert_eq!(
+            idx,
+            Some(0),
+            "\"a\" で始まる先頭は apple.txt（インデックス 0）のはず"
+        );
+    }
+
+    /// 同じ文字を繰り返し入力すると次候補へ進むことを守るテスト。
+    #[test]
+    fn typeahead_match_repeated_char_cycles_to_next() {
+        let mut state = AppState {
+            entries: vec![
+                make_entry("alpha.txt", false),
+                make_entry("beta.txt", false),
+                make_entry("arc.txt", false),
+            ],
+            ..AppState::default()
+        };
+        // 1 回目: "a" → "alpha.txt"（インデックス 0）。
+        let first = state.typeahead_match("a", -1);
+        assert_eq!(first, Some(0));
+
+        // 2 回目: 同じ "a" を繰り返し → インデックス 0 の次、"arc.txt"（インデックス 2）へ。
+        // バッファは "aa" だが is_repeated_single なので繰り返しモードになる。
+        let second = state.typeahead_match("a", 0);
+        assert_eq!(
+            second,
+            Some(2),
+            "\"a\" 繰り返しで次候補 arc.txt（インデックス 2）のはず"
+        );
     }
 }
