@@ -16,22 +16,41 @@ export struct FileRow {
     is-dir: bool,
 }
 
-// 列ヘッダ 1 セル。クリックでその列のソートを切り替える。
-// 現在ソート中の列には昇順/降順の方向インジケータ（▲/▼）を表示する。
-component SortHeader inherits Rectangle {
+// 列ヘッダ 1 セル（モダンスタイリング版 #42）。
+// * ホバー時に surface-variant から微妙に明るくして操作感を出す（60ms アニメ）。
+// * 右端に sort-indicator プロパティ（"" / "▲" / "▼"）の表示領域を確保する。
+//   ソート機能自体は将来の Issue で追加予定。既存のソートコールバックとも共存できるよう、
+//   プロパティ名は sort-indicator で固定している。
+// * 左端に 1px の縦区切り線（divider 色）を表示する（最初のセルは show-left-border で制御）。
+component HeaderCell inherits Rectangle {
     in property <string> label;
     in property <int> column;          // この列の識別子（0=名前, 1=サイズ, 2=更新日時）。
     in property <int> active-column;   // いま実際にソートされている列。
     in property <bool> ascending;      // 昇順なら true。
     in property <bool> align-right;    // サイズ列のように右寄せしたいとき true。
+    // 列の左端に縦区切り線を表示するか（先頭セルでは不要なので false にする）。
+    in property <bool> show-left-border: true;
+    // ソートインジケーター領域の受け皿。ソート機能実装前は "" で非表示、
+    // 将来は active-column と ascending から自動計算して渡す。
+    in property <string> sort-indicator: active-column == column ? (ascending ? "▲" : "▼") : "";
     callback sort(int);
 
-    TouchArea {
+    // ホバー中は surface-variant より少し明るくして操作感を示す。
+    // ホバーでない通常状態は surface-variant（ヘッダ背景として親から継承）。
+    background: hover-area.has-hover ? Theme.hover : Theme.surface-variant;
+    animate background {
+        duration: 60ms;
+        easing: ease-out;
+    }
+
+    hover-area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.sort(root.column); }
     }
 
     HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
         spacing: 4px;
         // 右寄せ列では中身を末尾側に寄せる（データ行の右寄せと見た目を合わせる）。
         alignment: root.align-right ? end : start;
@@ -41,13 +60,22 @@ component SortHeader inherits Rectangle {
             color: Theme.on-surface;
             vertical-alignment: center;
         }
-        // ソート中の列にだけ方向インジケータを出す（それ以外は空文字で非表示）。
+        // ソートインジケーター表示領域。空文字のときは幅 0 に縮む。
         Text {
-            text: root.active-column == root.column ? (root.ascending ? "▲" : "▼") : "";
+            text: root.sort-indicator;
             color: Theme.accent;
             font-size: 11px;
             vertical-alignment: center;
         }
+    }
+
+    // 左端 1px 縦区切り線（先頭セルは show-left-border: false で非表示）。
+    if root.show-left-border: Rectangle {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: parent.height;
+        background: Theme.divider;
     }
 }
 
@@ -372,38 +400,58 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ヘッダ行（固定）。各列クリックでソート切替。列幅はデータ行と揃える。
-            HorizontalBox {
+            // ヘッダ行（固定）。#42: surface-variant 背景 + ボトムボーダー + 列間区切り線。
+            // 列幅はデータ行（FileRowItem）の HorizontalBox と揃える。
+            Rectangle {
                 vertical-stretch: 0;
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 8px;
-                // 種別列はソート対象外（固定ラベル）。
-                Text { text: "種別"; width: 48px; font-weight: 700; color: Theme.on-surface; }
-                SortHeader {
-                    label: "名前";
-                    column: 0;
-                    horizontal-stretch: 1;
-                    active-column: root.sort-column;
-                    ascending: root.sort-ascending;
-                    sort(c) => { root.sort-changed(c); }
+                height: 30px;
+                background: Theme.surface-variant;
+
+                // ヘッダ下端の 1px ボトムボーダー（一覧との境界）。
+                Rectangle {
+                    x: 0;
+                    y: parent.height - 1px;
+                    width: parent.width;
+                    height: 1px;
+                    background: Theme.divider;
                 }
-                SortHeader {
-                    label: "サイズ";
-                    column: 1;
-                    width: 110px;
-                    align-right: true;
-                    active-column: root.sort-column;
-                    ascending: root.sort-ascending;
-                    sort(c) => { root.sort-changed(c); }
-                }
-                SortHeader {
-                    label: "更新日時";
-                    column: 2;
-                    width: 150px;
-                    active-column: root.sort-column;
-                    ascending: root.sort-ascending;
-                    sort(c) => { root.sort-changed(c); }
+
+                HorizontalLayout {
+                    // 種別列（ソート対象外・固定ラベル）。左端なので show-left-border: false。
+                    HeaderCell {
+                        label: "種別";
+                        column: -1;
+                        width: 48px + 8px + 8px; // padding-left(8) + 48px + spacing は HorizontalLayout が吸収
+                        show-left-border: false;
+                        active-column: -1;
+                        ascending: false;
+                        sort(c) => { }
+                    }
+                    HeaderCell {
+                        label: "名前";
+                        column: 0;
+                        horizontal-stretch: 1;
+                        active-column: root.sort-column;
+                        ascending: root.sort-ascending;
+                        sort(c) => { root.sort-changed(c); }
+                    }
+                    HeaderCell {
+                        label: "サイズ";
+                        column: 1;
+                        width: 110px;
+                        align-right: true;
+                        active-column: root.sort-column;
+                        ascending: root.sort-ascending;
+                        sort(c) => { root.sort-changed(c); }
+                    }
+                    HeaderCell {
+                        label: "更新日時";
+                        column: 2;
+                        width: 150px;
+                        active-column: root.sort-column;
+                        ascending: root.sort-ascending;
+                        sort(c) => { root.sort-changed(c); }
+                    }
                 }
             }
 
