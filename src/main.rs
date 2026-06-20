@@ -286,8 +286,8 @@ fn apply_listing(
 ) {
     // 「最後に要求された移動が勝つ」ためのガード。
     // 読み込み中に別のディレクトリへ移動されていたら、この古い結果は捨てる。
-    let is_current = APP.with(|app| app.borrow().current_dir == path);
-    if !is_current {
+    // ガードのロジックは AppState::should_apply に集約し、ここでは呼び出すだけにする。
+    if !APP.with(|app| app.borrow().should_apply(&path)) {
         return;
     }
 
