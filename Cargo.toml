@@ -18,6 +18,8 @@ dirs = "6.0"
 chrono = "0.4"
 # 大規模ディレクトリでの metadata 取得を並列化し、応答性を改善するため（fs::lister）。
 rayon = "1"
+# OS デフォルトアプリでファイルを開くため（クロスプラットフォーム）。
+open = "5"
 
 [build-dependencies]
 # .slint ファイルを Rust コードへコンパイルするビルドヘルパ。
