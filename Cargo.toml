@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 description = "Windows 向けの軽量・高速ファイラー（土台）"
 license = "MIT"
+# MSI インストーラー（WiX）が発行元情報として参照する。authors が無いと wxs を生成できない。
+authors = ["noan98 <noanoa.1998@gmail.com>"]
+# dist（cargo-dist）が GitHub Release / インストーラーの配布元 URL として参照する。
+# これが無いと CI 用ワークフローを生成できない。
+repository = "https://github.com/noan98/velo"
+
+[package.metadata.wix]
+upgrade-guid = "ECE97308-6124-4F12-B8AE-6DE1909114F2"
+path-guid = "1981C586-53C4-4813-992F-98027A2759D2"
+license = false
+eula = false
 
 [dependencies]
 # GUI 本体。UI は ui/app.slint に記述し、build.rs でコンパイルする。
@@ -35,3 +46,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# dist がリリース成果物をビルドするときのプロファイル。
+# 配布バイナリも「軽量・高速起動」方針に合わせ、release と同じフル LTO を引き継ぐ
+# （dist 既定の thin LTO ではなく、[profile.release] の lto = true をそのまま使う）。
+[profile.dist]
+inherits = "release"

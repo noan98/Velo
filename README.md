@@ -38,6 +38,32 @@ cargo clippy           # 静的チェック（警告ゼロを維持する）
 
 ---
 
+## 配布とインストール
+
+エンドユーザー向けの配布は [dist（cargo-dist）](https://opensource.axo.dev/cargo-dist/) で自動化しています。
+`v` 始まりのタグ（例: `v0.1.0`）を push すると、`.github/workflows/release.yml`（dist が生成・管理）が走り、
+**GitHub Release** に以下の成果物を添付します。
+
+- **MSI インストーラー**（`velo-x86_64-pc-windows-msvc.msi`）— ダブルクリックで導入。Program Files へ配置し、PATH も通します。
+- **PowerShell ワンライナーインストーラー**（`velo-installer.ps1`）— ターミナルから一発でダウンロード＆設置。
+- **ポータブル zip**（`velo-x86_64-pc-windows-msvc.zip`）— 展開して `velo.exe` を直接起動（インストール不要）。
+
+リリース手順（メンテナ向け）:
+
+```sh
+# バージョンを上げてタグを打つだけ。CI がビルド〜Release 公開まで行う。
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+設定の本体は `dist-workspace.toml`（対象ターゲット・生成するインストーラー種別など）にあります。
+ローカルで成果物の生成計画を確認したいときは `dist plan`、CI ワークフローを再生成したいときは
+`dist generate` を使います（`Cargo.toml` の `[package.metadata.wix]` の GUID は MSI の同一性に関わるため変更しないこと）。
+
+> 方針との整合: 配布物も「軽量・高速起動」を崩さないよう、`[profile.dist]` は `[profile.release]`（フル LTO・strip）を継承します。
+
+---
+
 ## アーキテクチャ（ジュニア向けメモ）
 
 設計の背骨は **「状態の真実の源（source of truth）は Rust 側に置き、Slint は表示専用にする」** です。
