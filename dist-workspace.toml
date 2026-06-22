@@ -18,3 +18,7 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# release.yml は最小権限化のため手編集している（既定 contents: read ＋ plan/host のみ write）。
+# これが無いと `dist plan` が「生成物が最新でない」と判定して失敗する。
+# ci を allow-dirty に含めることで手編集を許容し、`dist generate` での自動上書きも抑止する。
+allow-dirty = ["ci"]
