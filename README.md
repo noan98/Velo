@@ -60,6 +60,12 @@ git push origin v0.1.0
 ローカルで成果物の生成計画を確認したいときは `dist plan`、CI ワークフローを再生成したいときは
 `dist generate` を使います（`Cargo.toml` の `[package.metadata.wix]` の GUID は MSI の同一性に関わるため変更しないこと）。
 
+> ⚠️ **再生成時の注意（最小権限化の手動パッチ）:** `.github/workflows/release.yml` は dist 生成物ですが、
+> 最小権限化のため**手動でパッチを当てています**。具体的にはワークフロー既定の権限を `contents: read` に下げ、
+> GitHub Release への書き込みが必要な `plan` / `host` ジョブにだけ `contents: write` を付与しています。
+> `dist generate` を実行すると dist 既定の「ワークフロー全体 `contents: write`」に戻ってしまうため、
+> **再生成したらこの最小権限パッチを当て直してください**。
+
 > 方針との整合: 配布物も「軽量・高速起動」を崩さないよう、`[profile.dist]` は `[profile.release]`（フル LTO・strip）を継承します。
 
 ---

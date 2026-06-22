@@ -14,8 +14,12 @@
 # title/body based on your changelogs.
 
 name: Release
+# 最小権限化（手動パッチ）: 既定は読み取りのみにし、GitHub Release への書き込みが
+# 必要な plan / host ジョブにだけ contents: write を付与する。
+# 注意: 本ファイルは dist 生成物。`dist generate` を再実行するとこの権限設定は
+# 上書きされて消えるため、再生成後はこのパッチを当て直すこと（README 参照）。
 permissions:
-  "contents": "write"
+  "contents": "read"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -47,6 +51,9 @@ on:
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
+    # タグ push 時は `dist host --steps=create` で GitHub Release を作成するため書き込みが要る。
+    permissions:
+      contents: write
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
@@ -213,6 +220,9 @@ jobs:
             ${{ env.BUILD_MANIFEST_NAME }}
   # Determines if we should publish/announce
   host:
+    # 成果物アップロードと `gh release create` で Release へ書き込むため write が要る。
+    permissions:
+      contents: write
     needs:
       - plan
       - build-local-artifacts
