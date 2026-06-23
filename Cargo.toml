@@ -1,6 +1,6 @@
 [package]
 name = "velo"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "Windows 向けの軽量・高速ファイラー（土台）"
 license = "MIT"
