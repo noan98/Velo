@@ -51,10 +51,21 @@ cargo clippy           # 静的チェック（警告ゼロを維持する）
 リリース手順（メンテナ向け）:
 
 ```sh
-# バージョンを上げてタグを打つだけ。CI がビルド〜Release 公開まで行う。
+# タグを打つだけ。Cargo.toml の version は CI がタグから自動で埋めるので手編集は不要。
+# CI がビルド〜Release 公開まで行う。
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+> 💡 **バージョンはタグが唯一の真実です。** `release.yml` の各ジョブが
+> `.github/scripts/set-version-from-tag.sh` を実行し、push されたタグ（例: `v0.1.2`）から
+> `Cargo.toml` / `Cargo.lock` の `version` を動的に埋めます。これは、Cargo.toml の version を
+> 上げ忘れたままタグを push して「タグと version の不一致で dist が失敗する」事故を防ぐためです。
+> リポジトリにコミットされた `Cargo.toml` の version はローカル開発・PR ビルド用の控えで、
+> リリース成果物のバージョンはあくまでタグから決まります。
+> なお、**Release は CI（`gh release create`）が作成します。** GitHub の UI からタグと同時に
+> Release を作るとワークフローと衝突して失敗するため、リリースは必ず上記の `git tag` + `git push`
+> で行ってください。
 
 設定の本体は `dist-workspace.toml`（対象ターゲット・生成するインストーラー種別など）にあります。
 ローカルで成果物の生成計画を確認したいときは `dist plan`、CI ワークフローを再生成したいときは
@@ -65,6 +76,11 @@ git push origin v0.1.0
 > GitHub Release への書き込みが必要な `plan` / `host` ジョブにだけ `contents: write` を付与しています。
 > `dist generate` を実行すると dist 既定の「ワークフロー全体 `contents: write`」に戻ってしまうため、
 > **再生成したらこの最小権限パッチを当て直してください**。
+>
+> 同様に、各ジョブの checkout 直後に差し込んでいる「タグからバージョンを反映」ステップ
+> （`.github/scripts/set-version-from-tag.sh` を呼ぶ）も**手動パッチ**です。`dist generate` で
+> 消えるため、再生成後はこのステップも当て直してください（`plan` / `build-local-artifacts` /
+> `build-global-artifacts` / `host` の 4 ジョブに必要）。
 
 > 方針との整合: 配布物も「軽量・高速起動」を崩さないよう、`[profile.dist]` は `[profile.release]`（フル LTO・strip）を継承します。
 
