@@ -67,6 +67,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # タグからバージョンを Cargo.toml / Cargo.lock へ動的に反映する（手動の version 更新を不要にする）。
+      - name: タグからバージョンを反映
+        shell: bash
+        run: bash .github/scripts/set-version-from-tag.sh
       - name: Install dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -127,6 +131,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # タグからバージョンを Cargo.toml / Cargo.lock へ動的に反映する（手動の version 更新を不要にする）。
+      - name: タグからバージョンを反映
+        shell: bash
+        run: bash .github/scripts/set-version-from-tag.sh
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -192,6 +200,10 @@ jobs:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
+      # タグからバージョンを Cargo.toml / Cargo.lock へ動的に反映する（手動の version 更新を不要にする）。
+      - name: タグからバージョンを反映
+        shell: bash
+        run: bash .github/scripts/set-version-from-tag.sh
       # Get all the local artifacts for the global tasks to use (for e.g. checksums)
       - name: Fetch local artifacts
         uses: actions/download-artifact@v8
@@ -245,6 +257,10 @@ jobs:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
+      # タグからバージョンを Cargo.toml / Cargo.lock へ動的に反映する（手動の version 更新を不要にする）。
+      - name: タグからバージョンを反映
+        shell: bash
+        run: bash .github/scripts/set-version-from-tag.sh
       # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
         uses: actions/download-artifact@v8
