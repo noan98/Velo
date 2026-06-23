@@ -51,4 +51,6 @@ awk -v v="$version" '
 ' Cargo.lock > Cargo.lock.tmp && mv Cargo.lock.tmp Cargo.lock
 
 echo "反映後の値:"
-grep -m1 '^version = ' Cargo.toml
+echo "  Cargo.toml: $(grep -m1 '^version = ' Cargo.toml)"
+# Cargo.lock の velo パッケージの version も出力し、両ファイルが揃ったことをログで目視確認できるようにする。
+echo "  Cargo.lock: $(grep -A1 '^name = "velo"$' Cargo.lock | grep -m1 '^version = ')"
